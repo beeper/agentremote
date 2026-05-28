@@ -672,6 +672,34 @@ func TestBeeperAIOwnsMatrixPayloadShape(t *testing.T) {
 	}
 }
 
+func TestMessagesSnapshotSurvivesJSONRoundTrip(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.MessagesSnapshot([]agui.Message{
+		{ID: "reasoning-1", Role: "reasoning", Content: "thought"},
+		{ID: run.MessageID, Role: agui.RoleAssistant, Content: "answer"},
+	})
+	raw, err := json.Marshal(run.Events[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTripped agui.Event
+	if err := json.Unmarshal(raw, &roundTripped); err != nil {
+		t.Fatal(err)
+	}
+	run.Events = []agui.Event{roundTripped}
+
+	if got := run.Text(); got != "answer" {
+		t.Fatalf("round-tripped snapshot was not used for text: %q", got)
+	}
+	if messages := run.Messages(true); len(messages) != 2 || messages[0].Role != "reasoning" || messages[1].Content != "answer" {
+		t.Fatalf("bad round-tripped snapshot messages: %#v", messages)
+	}
+	if messages := run.Messages(false); len(messages) != 1 || messages[0].Role != agui.RoleAssistant {
+		t.Fatalf("reasoning filter failed for round-tripped snapshot: %#v", messages)
+	}
+}
+
 func TestFinalSegmentsPackMultiplePartsUntilBudget(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "agent-1", "Agent", time.Unix(10, 0))
 	run.MessageID = "msg-run-1"
@@ -701,6 +729,25 @@ func TestFinalSegmentsPackMultiplePartsUntilBudget(t *testing.T) {
 	}
 	if segments[0].Metadata.Count != 2 || segments[1].Metadata.Count != 2 || segments[1].Metadata.Index != 1 {
 		t.Fatalf("bad segment metadata: %#v %#v", segments[0].Metadata, segments[1].Metadata)
+	}
+}
+
+func TestApprovalResponseClearsResolvedInterrupt(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	approval := ToolApproval{ID: "approval-1", NeedsApproval: true}
+	writer.ToolApprovalRequested("tool-1", "shell", map[string]any{}, approval)
+	if len(run.Interrupts) != 1 {
+		t.Fatalf("expected pending interrupt: %#v", run.Interrupts)
+	}
+	writer.ToolApprovalResponded("tool-1", "shell", map[string]any{}, ToolApprovalResponse{ID: approval.ID, Approved: true})
+	if len(run.Interrupts) != 0 {
+		t.Fatalf("approval response left stale interrupts: %#v", run.Interrupts)
+	}
+	writer.ToolApprovalRequested("tool-2", "fetch", map[string]any{}, ToolApproval{ID: "approval-2", NeedsApproval: true})
+	writer.ToolDenied("tool-2", "fetch", map[string]any{}, "approval-2", "denied")
+	if len(run.Interrupts) != 0 {
+		t.Fatalf("approval denial left stale interrupts: %#v", run.Interrupts)
 	}
 }
 

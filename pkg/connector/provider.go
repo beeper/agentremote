@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/beeper/ai-bridge/pkg/agent/harness"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
@@ -124,6 +125,11 @@ func mergeAnyMaps(base map[string]any, override map[string]any) map[string]any {
 
 func (cl *Client) authForProvider(provider aiid.ProviderConfig) func(context.Context, ai.Model) (*harness.AgentHarnessAuth, error) {
 	return func(ctx context.Context, model ai.Model) (*harness.AgentHarnessAuth, error) {
+		var err error
+		provider, err = cl.refreshProviderIfNeeded(ctx, provider)
+		if err != nil {
+			return nil, err
+		}
 		apiKey := resolveConfiguredAPIKey(provider.APIKey)
 		if provider.ID == aiid.DefaultProvider {
 			apiKey = cl.Main.AppServiceToken
@@ -135,6 +141,38 @@ func (cl *Client) authForProvider(provider aiid.ProviderConfig) func(context.Con
 			APIKey:  apiKey,
 			Headers: provider.Headers,
 		}, nil
+	}
+}
+
+func (cl *Client) refreshProviderIfNeeded(ctx context.Context, provider aiid.ProviderConfig) (aiid.ProviderConfig, error) {
+	if provider.API != ai.ApiOpenAICodexResponses || provider.RefreshToken == "" || provider.ExpiresAtMS == 0 {
+		return provider, nil
+	}
+	if time.Now().Add(2 * time.Minute).Before(time.UnixMilli(provider.ExpiresAtMS)) {
+		return provider, nil
+	}
+	credentials, err := refreshChatGPTCredentials(ctx, provider.RefreshToken)
+	if err != nil {
+		return provider, err
+	}
+	provider.APIKey = credentials.AccessToken
+	provider.RefreshToken = credentials.RefreshToken
+	provider.ExpiresAtMS = credentials.ExpiresAtMS
+	cl.saveProviderConfig(ctx, provider)
+	return provider, nil
+}
+
+func (cl *Client) saveProviderConfig(ctx context.Context, provider aiid.ProviderConfig) {
+	meta := cl.loginMetadata()
+	if meta == nil || meta.Providers == nil || provider.ID == "" {
+		return
+	}
+	if _, ok := meta.Providers[provider.ID]; !ok {
+		return
+	}
+	meta.Providers[provider.ID] = provider
+	if cl.UserLogin != nil {
+		_ = cl.UserLogin.Save(ctx)
 	}
 }
 

@@ -196,7 +196,7 @@ type CustomEvent struct {
 
 func EventFromTyped(value any) (Event, error) {
 	evt := NewEvent(nil)
-	if err := appendJSONFields(evt, reflect.ValueOf(value)); err != nil {
+	if err := appendJSONFields(&evt, reflect.ValueOf(value)); err != nil {
 		return Event{}, err
 	}
 	return evt, nil
@@ -210,7 +210,7 @@ func mustEvent(value any) Event {
 	return evt
 }
 
-func appendJSONFields(out Event, value reflect.Value) error {
+func appendJSONFields(out *Event, value reflect.Value) error {
 	if !value.IsValid() {
 		return nil
 	}
@@ -225,7 +225,7 @@ func appendJSONFields(out Event, value reflect.Value) error {
 		if err != nil {
 			return err
 		}
-		return json.Unmarshal(raw, &out)
+		return json.Unmarshal(raw, out)
 	}
 	typ := value.Type()
 	for i := 0; i < value.NumField(); i++ {

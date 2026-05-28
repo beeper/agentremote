@@ -19,7 +19,7 @@ const (
 	RoomToolsType     = "com.beeper.ai.tools"
 	RoomModelType     = "com.beeper.ai.model"
 	RoomPromptType    = "com.beeper.ai.additional_prompt"
-	StreamType        = "com.beeper.ai"
+	StreamType        = "com.beeper.stream"
 )
 
 func DefaultLoginID(mxid id.UserID) networkid.UserLoginID {

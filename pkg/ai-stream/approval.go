@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/beeper/ai-bridge/pkg/ag-ui"
@@ -43,6 +44,7 @@ type ApprovalTimeout struct {
 }
 
 type ApprovalQueue struct {
+	mu      sync.Mutex
 	active  *ApprovalPrompt
 	pending []ApprovalPrompt
 	timeout ApprovalTimeout
@@ -474,6 +476,8 @@ func (q *ApprovalQueue) Add(prompt ApprovalPrompt) {
 	if q == nil || prompt.ID == "" {
 		return
 	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	if q.active == nil {
 		cp := prompt
 		q.active = &cp
@@ -491,20 +495,35 @@ func (q *ApprovalQueue) Add(prompt ApprovalPrompt) {
 }
 
 func (q *ApprovalQueue) AddAll(prompts []ApprovalPrompt) {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	for _, prompt := range prompts {
-		q.Add(prompt)
+		q.addLocked(prompt)
 	}
 }
 
 func (q *ApprovalQueue) Active() (ApprovalPrompt, bool) {
-	if q == nil || q.active == nil {
+	if q == nil {
+		return ApprovalPrompt{}, false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.active == nil {
 		return ApprovalPrompt{}, false
 	}
 	return *q.active, true
 }
 
 func (q *ApprovalQueue) Pending() []ApprovalPrompt {
-	if q == nil || len(q.pending) == 0 {
+	if q == nil {
+		return nil
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.pending) == 0 {
 		return nil
 	}
 	return append([]ApprovalPrompt(nil), q.pending...)
@@ -514,6 +533,8 @@ func (q *ApprovalQueue) Timeout() ApprovalTimeout {
 	if q == nil {
 		return ApprovalTimeout{Reason: "timed_out"}
 	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	timeout := q.timeout
 	if timeout.Reason == "" {
 		timeout.Reason = "timed_out"
@@ -522,7 +543,58 @@ func (q *ApprovalQueue) Timeout() ApprovalTimeout {
 }
 
 func (q *ApprovalQueue) Resolve(approvalID string) (ApprovalPrompt, bool) {
-	if q == nil || q.active == nil || q.active.ID != approvalID {
+	if q == nil {
+		return ApprovalPrompt{}, false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.resolveLocked(approvalID)
+}
+
+func (q *ApprovalQueue) TimeoutActive() (ApprovalPrompt, ToolApprovalResponse, bool) {
+	if q == nil {
+		return ApprovalPrompt{}, ToolApprovalResponse{}, false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.active == nil {
+		return ApprovalPrompt{}, ToolApprovalResponse{}, false
+	}
+	active := *q.active
+	response := TimedOutApprovalResponse(active.ID)
+	timeout := q.timeout
+	if timeout.Reason == "" {
+		timeout.Reason = "timed_out"
+	}
+	if timeout.Reason != "" {
+		response.Reason = timeout.Reason
+	}
+	q.resolveLocked(active.ID)
+	return active, response, true
+}
+
+func (q *ApprovalQueue) addLocked(prompt ApprovalPrompt) {
+	if prompt.ID == "" {
+		return
+	}
+	if q.active == nil {
+		cp := prompt
+		q.active = &cp
+		return
+	}
+	if q.active.ID == prompt.ID {
+		return
+	}
+	for _, existing := range q.pending {
+		if existing.ID == prompt.ID {
+			return
+		}
+	}
+	q.pending = append(q.pending, prompt)
+}
+
+func (q *ApprovalQueue) resolveLocked(approvalID string) (ApprovalPrompt, bool) {
+	if q.active == nil || q.active.ID != approvalID {
 		return ApprovalPrompt{}, false
 	}
 	resolved := *q.active
@@ -534,19 +606,6 @@ func (q *ApprovalQueue) Resolve(approvalID string) (ApprovalPrompt, bool) {
 	q.pending = append([]ApprovalPrompt(nil), q.pending[1:]...)
 	q.active = &next
 	return resolved, true
-}
-
-func (q *ApprovalQueue) TimeoutActive() (ApprovalPrompt, ToolApprovalResponse, bool) {
-	active, ok := q.Active()
-	if !ok {
-		return ApprovalPrompt{}, ToolApprovalResponse{}, false
-	}
-	response := TimedOutApprovalResponse(active.ID)
-	if reason := q.Timeout().Reason; reason != "" {
-		response.Reason = reason
-	}
-	q.Resolve(active.ID)
-	return active, response, true
 }
 
 func CleanupApprovalReactions(choices []ApprovalChoice, selectedKey string, events []ReactionEvent, bridgeSender string) ApprovalCleanup {

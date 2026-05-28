@@ -108,3 +108,27 @@ func TestFinalMetadataEditUsesCompactAnchorContent(t *testing.T) {
 		t.Fatalf("final metadata edit missing final AI payload: %#v", converted.ModifiedParts[0].Extra)
 	}
 }
+
+func TestFinalSegmentsUseMonotonicStreamOrder(t *testing.T) {
+	now := time.Unix(10, 0)
+	run := aistream.NewRun("run-1", "thread-1", "", "ai", "AI", now)
+	writer := aistream.NewWriter(run, func() time.Time { return now })
+	writer.Text(strings.Repeat("a", 70*1024))
+	writer.Finish(agui.FinishReasonStop)
+
+	segments := FinalSegments(
+		networkid.PortalKey{ID: "portal-1"},
+		networkid.UserID("ai"),
+		*run,
+		id.EventID("$anchor"),
+		now,
+	)
+	if len(segments) < 2 {
+		t.Fatalf("expected multiple final segments, got %d", len(segments))
+	}
+	for i := 1; i < len(segments); i++ {
+		if segments[i].StreamOrder <= segments[i-1].StreamOrder {
+			t.Fatalf("segment stream order did not increase: %d <= %d", segments[i].StreamOrder, segments[i-1].StreamOrder)
+		}
+	}
+}

@@ -490,7 +490,7 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 	}
 	if assistantMessage.StopReason != ai.StopReasonError && assistantMessage.StopReason != ai.StopReasonAborted {
 		if last := active.lastAssistant(); last != nil {
-			cl.runAutoCompaction(ctx, agentHarness, agentSession, model, assistantMessage)
+			cl.runAutoCompaction(ctx, streamPublisher, msg.Portal.MXID, last.eventID, agentHarness, agentSession, model, assistantMessage)
 		}
 	}
 	portalMeta.LastRunID = active.lastRunID()

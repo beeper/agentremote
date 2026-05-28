@@ -14,6 +14,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
+	"maunium.net/go/mautrix/bridgev2/status"
 )
 
 const (
@@ -21,6 +22,7 @@ const (
 	loginFlowOpenAIResponses      = "openai-responses"
 	loginFlowOpenAICompletions    = "openai-completions"
 	loginFlowOpenAICodexResponses = "openai-codex-responses"
+	loginFlowChatGPTDevice        = "chatgpt-device"
 	loginStepDefault              = "com.beeper.ai.login.default"
 	loginStepProviderConfig       = "com.beeper.ai.login.provider.config"
 	loginStepProviderDefault      = "com.beeper.ai.login.provider.default_model"
@@ -40,6 +42,10 @@ func (c *Connector) GetLoginFlows() []bridgev2.LoginFlow {
 		Name:        "OpenAI Codex Responses",
 		Description: "Add a provider using the OpenAI Codex Responses API",
 		ID:          loginFlowOpenAICodexResponses,
+	}, {
+		Name:        "ChatGPT",
+		Description: "Log in with ChatGPT using a browser device code",
+		ID:          loginFlowChatGPTDevice,
 	}}
 }
 
@@ -53,6 +59,8 @@ func (c *Connector) CreateLogin(ctx context.Context, user *bridgev2.User, flowID
 		return &CustomProviderLogin{Main: c, User: user, config: providerLoginConfig{API: ai.ApiOpenAICompletions}}, nil
 	case loginFlowOpenAICodexResponses:
 		return &CustomProviderLogin{Main: c, User: user, config: providerLoginConfig{API: ai.ApiOpenAICodexResponses}}, nil
+	case loginFlowChatGPTDevice:
+		return &ChatGPTDeviceLogin{Main: c, User: user}, nil
 	default:
 		return nil, fmt.Errorf("invalid login flow ID")
 	}
@@ -296,17 +304,39 @@ func (c *Connector) UpsertProviderLogin(ctx context.Context, user *bridgev2.User
 	loginID := aiid.ProviderLoginID(mainLogin.ID, provider.ID)
 	if cached := c.Bridge.GetCachedUserLoginByID(loginID); cached != nil {
 		cached.RemoteName = provider.DisplayName
+		cached.RemoteProfile.Name = provider.DisplayName
 		cached.Metadata = providerLoginMetadata(mainLogin.ID, provider.ID)
 		if err = cached.Save(ctx); err != nil {
 			return nil, err
 		}
+		c.connectProviderLogin(ctx, cached)
 		return cached, nil
 	}
-	return user.NewLogin(ctx, &database.UserLogin{
+	login, err := user.NewLogin(ctx, &database.UserLogin{
 		ID:         loginID,
 		RemoteName: provider.DisplayName,
-		Metadata:   providerLoginMetadata(mainLogin.ID, provider.ID),
+		RemoteProfile: status.RemoteProfile{
+			Name: provider.DisplayName,
+		},
+		Metadata: providerLoginMetadata(mainLogin.ID, provider.ID),
 	}, &bridgev2.NewLoginParams{})
+	if err != nil {
+		return nil, err
+	}
+	c.connectProviderLogin(ctx, login)
+	return login, nil
+}
+
+func (c *Connector) connectProviderLogin(ctx context.Context, login *bridgev2.UserLogin) {
+	if login == nil {
+		return
+	}
+	if login.Client == nil {
+		_ = c.LoadUserLogin(ctx, login)
+	}
+	if login.Client != nil {
+		login.Client.Connect(ctx)
+	}
 }
 
 func providerLoginMetadata(parentLoginID networkid.UserLoginID, providerID string) *aiid.UserLoginMetadata {

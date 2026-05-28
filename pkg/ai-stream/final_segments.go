@@ -43,7 +43,7 @@ func packFinalSegments(run Run, message UIMessage, parts []MessagePart, budget i
 	maxMetadata := FinalSegmentMetadata{RunID: run.RunID, MessageID: run.MessageID, Index: len(parts), Count: len(parts)}
 	segments := make([]FinalSegment, 0)
 	current := make([]MessagePart, 0)
-	for _, part := range parts {
+	for _, part := range splitFinalPartsForPayload(run, message, parts, budget, maxMetadata) {
 		candidate := append(append([]MessagePart(nil), current...), part)
 		if len(current) > 0 && finalSegmentPayloadSize(run, message, candidate, maxMetadata) > budget {
 			segments = append(segments, FinalSegment{Message: finalSegmentMessage(message, current)})
@@ -56,6 +56,50 @@ func packFinalSegments(run Run, message UIMessage, parts []MessagePart, budget i
 		segments = append(segments, FinalSegment{Message: finalSegmentMessage(message, current)})
 	}
 	return segments
+}
+
+func splitFinalPartsForPayload(run Run, message UIMessage, parts []MessagePart, budget int, metadata FinalSegmentMetadata) []MessagePart {
+	out := make([]MessagePart, 0, len(parts))
+	for _, part := range parts {
+		out = append(out, splitFinalPartForPayload(run, message, part, budget, metadata)...)
+	}
+	return out
+}
+
+func splitFinalPartForPayload(run Run, message UIMessage, part MessagePart, budget int, metadata FinalSegmentMetadata) []MessagePart {
+	if finalSegmentPayloadSize(run, message, []MessagePart{part}, metadata) <= budget {
+		return []MessagePart{part}
+	}
+	content, _ := part["content"].(string)
+	if content == "" {
+		return []MessagePart{part}
+	}
+	maxContentBytes := len(content) / 2
+	if maxContentBytes > budget/2 {
+		maxContentBytes = budget / 2
+	}
+	if maxContentBytes < 1 {
+		maxContentBytes = 1
+	}
+	for maxContentBytes >= 1 {
+		chunks := SplitTextUTF8(content, maxContentBytes)
+		out := make([]MessagePart, 0, len(chunks))
+		allFit := true
+		for _, chunk := range chunks {
+			split := cloneValueMap(part)
+			split["content"] = chunk
+			if finalSegmentPayloadSize(run, message, []MessagePart{split}, metadata) > budget {
+				allFit = false
+				break
+			}
+			out = append(out, split)
+		}
+		if allFit {
+			return out
+		}
+		maxContentBytes /= 2
+	}
+	return []MessagePart{part}
 }
 
 func assignFinalSegmentMetadata(run Run, segments []FinalSegment) {

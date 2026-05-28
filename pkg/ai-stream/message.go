@@ -1,6 +1,7 @@
 package aistream
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -290,10 +291,13 @@ func latestMessagesSnapshot(events []agui.Event, includeReasoning bool) []agui.M
 			continue
 		}
 		messages, ok := evt.Get("messages").([]agui.Message)
-		if !ok {
+		if ok {
+			snapshot = messages
 			continue
 		}
-		snapshot = messages
+		if decoded := decodeMessagesSnapshot(evt.Get("messages")); len(decoded) > 0 {
+			snapshot = decoded
+		}
 	}
 	if len(snapshot) == 0 {
 		return nil
@@ -302,6 +306,26 @@ func latestMessagesSnapshot(events []agui.Event, includeReasoning bool) []agui.M
 	for _, message := range snapshot {
 		if message.Role == "reasoning" && !includeReasoning {
 			continue
+		}
+		out = append(out, message)
+	}
+	return out
+}
+
+func decodeMessagesSnapshot(value any) []agui.Message {
+	raw, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]agui.Message, 0, len(raw))
+	for _, item := range raw {
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			return nil
+		}
+		var message agui.Message
+		if err := json.Unmarshal(encoded, &message); err != nil {
+			return nil
 		}
 		out = append(out, message)
 	}

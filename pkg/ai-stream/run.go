@@ -170,6 +170,7 @@ type Writer struct {
 	reasoningPhaseID          string
 	reasoningPhaseOpen        bool
 	nextSyntheticReasoningIdx int
+	previewText               string
 }
 
 func NewRun(runID, threadID, model, agentID, agentName string, now time.Time) *Run {
@@ -214,6 +215,7 @@ func NewWriter(run *Run, now func() time.Time) *Writer {
 		reasoningMessages: map[int]string{},
 		reasoningOpen:     map[int]bool{},
 		reasoningPhaseID:  "reasoning-" + run.RunID,
+		previewText:       run.Text(),
 	}
 }
 
@@ -371,6 +373,7 @@ func (w *Writer) ToolApprovalResponded(toolCallID, name string, input any, respo
 	if !response.Approved {
 		state = agui.ToolResultStateError
 	}
+	w.resolveInterrupt(response.ID, toolCallID)
 	w.ToolResult(toolCallID, asString(jsonString(result)), state)
 }
 
@@ -397,6 +400,7 @@ func (w *Writer) ToolDenied(toolCallID, name string, input any, approvalID, reas
 			w.Run.Approvals[i].Reason = reason
 		}
 	}
+	w.resolveInterrupt(approvalID, toolCallID)
 	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, agui.ToolStateInputComplete))
 	w.ToolResult(toolCallID, asString(jsonString(DeniedApprovalToolResult(approvalID, reason))), agui.ToolResultStateError)
 }
@@ -600,6 +604,20 @@ func (w *Writer) recordInterrupt(interrupt agui.Interrupt) {
 	w.Run.Interrupts = append(w.Run.Interrupts, interrupt)
 }
 
+func (w *Writer) resolveInterrupt(interruptID, toolCallID string) {
+	if w == nil || w.Run == nil || len(w.Run.Interrupts) == 0 {
+		return
+	}
+	filtered := w.Run.Interrupts[:0]
+	for _, interrupt := range w.Run.Interrupts {
+		if interrupt.ID == interruptID || (toolCallID != "" && interrupt.ToolCallID == toolCallID) {
+			continue
+		}
+		filtered = append(filtered, interrupt)
+	}
+	w.Run.Interrupts = filtered
+}
+
 func (w *Writer) initState() {
 	if w.textMessages == nil {
 		w.textMessages = map[int]string{}
@@ -649,7 +667,7 @@ func (w *Writer) applySummary(evt agui.Event) {
 	switch evt.Type() {
 	case agui.EventTextMessageContent, agui.EventTextMessageChunk:
 		if delta, _ := evt.Get("delta").(string); delta != "" {
-			w.Run.Preview = PreviewFromText(w.Run.Text(), PreviewBudgetBytes)
+			w.appendPreviewText(delta)
 		}
 	case agui.EventCustom:
 		name, _ := evt.Get("name").(string)
@@ -666,5 +684,16 @@ func (w *Writer) applySummary(evt agui.Event) {
 				w.Run.Data[key] = value["value"]
 			}
 		}
+	}
+}
+
+func (w *Writer) appendPreviewText(delta string) {
+	if w == nil || w.Run == nil || delta == "" || w.Run.Preview.Truncated {
+		return
+	}
+	w.previewText += delta
+	w.Run.Preview = PreviewFromText(w.previewText, PreviewBudgetBytes)
+	if w.Run.Preview.Truncated {
+		w.previewText = w.Run.Preview.Text
 	}
 }

@@ -107,14 +107,14 @@ func (e Event) Len() int {
 	return len(e.fields)
 }
 
-func (e Event) Set(key string, value any) {
+func (e *Event) Set(key string, value any) {
 	if e.fields == nil {
 		e.fields = map[string]any{}
 	}
 	e.fields[key] = value
 }
 
-func (e Event) Delete(key string) {
+func (e *Event) Delete(key string) {
 	delete(e.fields, key)
 }
 
@@ -264,9 +264,6 @@ func (b EventBuilder) RunFinishedWithOutcome(threadID, runID, finishReason strin
 		Usage:         usage,
 		Outcome:       outcome,
 	})
-	if outcome.Type != "" {
-		evt.Set("outcome", outcome)
-	}
 	return evt
 }
 

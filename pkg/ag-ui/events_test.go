@@ -72,6 +72,25 @@ func TestBuildersCoverLifecycleEventsWithTimestamps(t *testing.T) {
 	}
 }
 
+func TestZeroValueEventSetMutatesOriginal(t *testing.T) {
+	var evt Event
+	evt.Set("type", EventCustom)
+	if evt.Type() != EventCustom {
+		t.Fatalf("Set on zero-value Event did not mutate original: %#v", evt)
+	}
+}
+
+func TestObjectSchemaCopiesProperties(t *testing.T) {
+	properties := JSONSchemaProperties{"ok": BooleanSchema()}
+	schema := ObjectSchema(properties)
+	properties["ok"] = StringSchema()
+
+	got := schema["properties"].(JSONSchemaProperties)["ok"]["type"]
+	if got != JSONSchemaTypeBoolean {
+		t.Fatalf("schema properties were externally mutated: %#v", schema)
+	}
+}
+
 func TestValidateRejectsBadEvents(t *testing.T) {
 	tests := []Event{
 		NewEvent(nil),

@@ -19,7 +19,11 @@ func StringSchema() JSONSchema {
 func ObjectSchema(properties JSONSchemaProperties, required ...string) JSONSchema {
 	schema := JSONSchema{"type": JSONSchemaTypeObject}
 	if len(properties) > 0 {
-		schema["properties"] = properties
+		props := make(JSONSchemaProperties, len(properties))
+		for key, value := range properties {
+			props[key] = value
+		}
+		schema["properties"] = props
 	}
 	if len(required) > 0 {
 		schema["required"] = append([]string(nil), required...)

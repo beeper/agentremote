@@ -55,10 +55,11 @@ func Carrier(portalKey networkid.PortalKey, sender networkid.UserID, run aistrea
 func FinalSegments(portalKey networkid.PortalKey, sender networkid.UserID, run aistream.Run, targetEventID id.EventID, timestamp time.Time) []*simplevent.PreConvertedMessage {
 	segments := aimatrix.FinalSegments(run)
 	out := make([]*simplevent.PreConvertedMessage, 0, len(segments))
-	for _, segment := range segments {
+	for i, segment := range segments {
 		content, extra := aimatrix.FinalSegmentContent(run, segment, targetEventID)
+		segmentTimestamp := timestamp.Add(time.Duration(i) * time.Nanosecond)
 		out = append(out, &simplevent.PreConvertedMessage{
-			EventMeta: eventMeta(bridgev2.RemoteEventMessage, portalKey, sender, timestamp),
+			EventMeta: eventMeta(bridgev2.RemoteEventMessage, portalKey, sender, segmentTimestamp),
 			Data:      &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{messagePart(content, extra, nil)}},
 			ID:        networkid.MessageID(aistream.FinalSegmentTxnID(run.RunID, segment.Metadata.Index)),
 		})

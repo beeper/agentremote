@@ -60,10 +60,15 @@ func (cl *ProviderLoginClient) LogoutRemote(ctx context.Context) {
 }
 
 func (cl *ProviderLoginClient) GetUserID() networkid.UserID {
-	return networkid.UserID("login:" + string(cl.UserLogin.ID))
+	return networkid.UserID("login:" + string(cl.parentLoginID()))
 }
 
 func (cl *ProviderLoginClient) IsThisUser(ctx context.Context, userID networkid.UserID) bool {
+	if cl != nil && cl.Main != nil && cl.Main.Bridge != nil {
+		if parent, _, err := cl.parentClient(ctx); err == nil {
+			return parent.IsThisUser(ctx, userID)
+		}
+	}
 	return userID == cl.GetUserID()
 }
 
@@ -72,14 +77,13 @@ func (cl *ProviderLoginClient) GetChatInfo(ctx context.Context, portal *bridgev2
 }
 
 func (cl *ProviderLoginClient) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
-	provider, ok, err := cl.provider(ctx)
-	if err != nil {
-		return nil, err
+	if cl != nil && cl.Main != nil && cl.Main.Bridge != nil {
+		parent, _, err := cl.parentClient(ctx)
+		if err == nil {
+			return parent.GetUserInfo(ctx, ghost)
+		}
 	}
-	name := "AI provider"
-	if ok && provider.DisplayName != "" {
-		name = provider.DisplayName
-	}
+	name := "AI"
 	isBot := true
 	return &bridgev2.UserInfo{Name: &name, IsBot: &isBot}, nil
 }
@@ -139,6 +143,9 @@ func (cl *ProviderLoginClient) parentClient(ctx context.Context) (*Client, strin
 		return nil, "", err
 	}
 	if parent.Client == nil {
+		if cl.Main == nil {
+			return nil, "", fmt.Errorf("parent login %s is unavailable without connector", parent.ID)
+		}
 		if err = cl.Main.LoadUserLogin(ctx, parent); err != nil {
 			return nil, "", err
 		}
@@ -173,6 +180,16 @@ func (cl *ProviderLoginClient) parentLogin(ctx context.Context) (*bridgev2.UserL
 		return nil, "", fmt.Errorf("parent login %s is unavailable", parentID)
 	}
 	return parent, meta.ProviderID, nil
+}
+
+func (cl *ProviderLoginClient) parentLoginID() networkid.UserLoginID {
+	if cl != nil && cl.UserLogin != nil {
+		if meta, ok := cl.UserLogin.Metadata.(*aiid.UserLoginMetadata); ok && meta.ParentLoginID != "" {
+			return networkid.UserLoginID(meta.ParentLoginID)
+		}
+		return cl.UserLogin.ID
+	}
+	return ""
 }
 
 func (cl *ProviderLoginClient) provider(ctx context.Context) (aiid.ProviderConfig, bool, error) {

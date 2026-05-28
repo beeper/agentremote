@@ -11,6 +11,8 @@ type ProviderConfig struct {
 	Provider       ai.Provider              `json:"provider" yaml:"provider"`
 	BaseURL        string                   `json:"base_url" yaml:"base_url"`
 	APIKey         string                   `json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	RefreshToken   string                   `json:"refresh_token,omitempty" yaml:"refresh_token,omitempty"`
+	ExpiresAtMS    int64                    `json:"expires_at_ms,omitempty" yaml:"expires_at_ms,omitempty"`
 	Headers        map[string]string        `json:"headers,omitempty" yaml:"headers,omitempty"`
 	DefaultModel   string                   `json:"default_model,omitempty" yaml:"default_model,omitempty"`
 	AllowedModels  []string                 `json:"allowed_models,omitempty" yaml:"allowed_models,omitempty"`
