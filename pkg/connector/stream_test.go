@@ -119,11 +119,11 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 	if message.ID != "assistant:run" || len(message.Parts) != 2 {
 		t.Fatalf("expected one assistant UI message with text and tool parts, got %#v", message)
 	}
-	if message.Parts[0]["type"] != "text" || message.Parts[0]["content"] != "hello" {
-		t.Fatalf("expected final answer text first, got %#v", message.Parts)
+	if message.Parts[0]["type"] != "tool-call" || message.Parts[0]["toolCallId"] != "call-session" {
+		t.Fatalf("expected folded tool-call part first, got %#v", message.Parts)
 	}
-	if message.Parts[1]["type"] != "tool-call" || message.Parts[1]["toolCallId"] != "call-session" {
-		t.Fatalf("expected folded tool-call part, got %#v", message.Parts)
+	if message.Parts[1]["type"] != "text" || message.Parts[1]["content"] != "hello" {
+		t.Fatalf("expected final answer text after tool call, got %#v", message.Parts)
 	}
 }
 
