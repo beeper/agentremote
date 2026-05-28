@@ -182,6 +182,50 @@ func TestWriterKeepsReasoningMessagesSeparate(t *testing.T) {
 	}
 }
 
+func TestInterleavedReasoningContentStaysSeparateInFinalProjections(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
+	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
+	run.Events = append(run.Events,
+		builder.RunStarted("thread-1", "run-1"),
+		builder.ReasoningMessageStart("reasoning-1"),
+		builder.ReasoningMessageContent("reasoning-1", "checked calendar"),
+		builder.ToolCallStart("msg-run-1", "tool-1", "fetch", nil),
+		builder.ToolCallEnd("tool-1", "fetch", map[string]any{"query": "events"}, agui.ToolStateInputComplete),
+		builder.ToolCallResult("tool-tool-1", "tool-1", `{"ok":true}`, agui.ToolResultStateComplete, agui.RoleTool),
+		builder.ReasoningMessageContent("reasoning-1", "checked issues"),
+		builder.ReasoningMessageEnd("reasoning-1"),
+		builder.RunFinished("thread-1", "run-1", agui.FinishReasonStop, agui.Usage{}),
+	)
+	if err := run.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	var reasoning []string
+	for _, message := range run.Messages(true) {
+		if message.Role == "reasoning" {
+			reasoning = append(reasoning, message.Content.(string))
+		}
+	}
+	if strings.Join(reasoning, "|") != "checked calendar|checked issues" {
+		t.Fatalf("interleaved reasoning messages were not preserved individually: %#v", reasoning)
+	}
+
+	uiMessage := run.FinalBeeperUIMessage(0, true)
+	var thinkingParts []string
+	for _, part := range uiMessage.Parts {
+		if part["type"] == "thinking" {
+			thinkingParts = append(thinkingParts, part["content"].(string))
+			if part["state"] != agui.PartStateDone {
+				t.Fatalf("terminal thinking part should be done, got %#v", part)
+			}
+		}
+	}
+	if strings.Join(thinkingParts, "|") != "checked calendar|checked issues" {
+		t.Fatalf("interleaved thinking parts were not preserved individually: %#v", uiMessage.Parts)
+	}
+}
+
 func TestRawEventIsTruncatedBeforePacking(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })

@@ -12,7 +12,7 @@ func TestBuildersCoverLifecycleEventsWithTimestamps(t *testing.T) {
 	idx := 1
 	events := []Event{
 		builder.RunStarted("thread", "run"),
-		builder.RunFinished("thread", "run", "tool-calls", Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}),
+		builder.RunFinished("thread", "run", FinishReasonToolCalls, Usage{PromptTokens: 1, CompletionTokens: 2, TotalTokens: 3}),
 		builder.RunError("thread", "run", "failed"),
 		builder.TextMessageStart("msg", RoleAssistant),
 		builder.TextMessageContent("msg", "hello"),

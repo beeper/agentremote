@@ -46,6 +46,9 @@ func (t Run) Messages(includeReasoning bool) []agui.Message {
 	toolCalls := map[string]*projectedToolCall{}
 	currentTextMessageID := ""
 	currentReasoningMessageID := ""
+	openReasoningMessageID := ""
+	openReasoningProjectedID := ""
+	reasoningSegmentCounts := map[string]int{}
 
 	ensureMessage := func(messageID, role string) *projectedMessage {
 		if messageID == "" {
@@ -94,9 +97,44 @@ func (t Run) Messages(includeReasoning bool) []agui.Message {
 		toolCalls[toolCallID] = tool
 		return tool
 	}
+	ensureReasoningMessage := func(messageID string) *projectedMessage {
+		if messageID == "" {
+			messageID = currentReasoningMessageID
+		}
+		if messageID == "" {
+			messageID = t.MessageID + "-reasoning"
+		}
+		currentReasoningMessageID = messageID
+		if openReasoningMessageID != messageID || openReasoningProjectedID == "" {
+			index := reasoningSegmentCounts[messageID]
+			reasoningSegmentCounts[messageID] = index + 1
+			openReasoningMessageID = messageID
+			openReasoningProjectedID = messageID
+			if index > 0 {
+				openReasoningProjectedID = fmt.Sprintf("%s-segment-%d", messageID, index+1)
+			}
+		}
+		return ensureMessage(openReasoningProjectedID, "reasoning")
+	}
+	closeReasoningMessage := func(messageID string) {
+		if messageID == "" {
+			messageID = currentReasoningMessageID
+		}
+		if messageID == "" {
+			messageID = openReasoningMessageID
+		}
+		if messageID == "" || openReasoningMessageID == messageID {
+			openReasoningMessageID = ""
+			openReasoningProjectedID = ""
+		}
+	}
 
 	for _, evt := range t.Events {
-		switch evt["type"] {
+		eventType, _ := evt["type"].(string)
+		if !isReasoningEventType(eventType) {
+			closeReasoningMessage("")
+		}
+		switch eventType {
 		case agui.EventTextMessageStart:
 			messageID, _ := evt["messageId"].(string)
 			role := firstString(evt["role"], agui.RoleAssistant)
@@ -125,38 +163,34 @@ func (t Run) Messages(includeReasoning bool) []agui.Message {
 				continue
 			}
 			messageID, _ := evt["messageId"].(string)
-			ensureMessage(messageID, "reasoning")
-			currentReasoningMessageID = messageID
+			ensureReasoningMessage(messageID)
 		case agui.EventReasoningMsgCont:
 			if !includeReasoning {
 				continue
 			}
 			messageID, _ := evt["messageId"].(string)
-			if messageID == "" {
-				messageID = currentReasoningMessageID
-			}
-			message := ensureMessage(messageID, "reasoning")
+			message := ensureReasoningMessage(messageID)
 			message.content.WriteString(asString(evt["delta"]))
 		case agui.EventReasoningMsgChunk:
 			if !includeReasoning {
 				continue
 			}
 			messageID, _ := evt["messageId"].(string)
-			if messageID == "" {
-				messageID = currentReasoningMessageID
+			if delta := asString(evt["delta"]); delta != "" {
+				message := ensureReasoningMessage(messageID)
+				message.content.WriteString(delta)
+			} else {
+				closeReasoningMessage(messageID)
 			}
-			if messageID == "" {
-				messageID = t.MessageID + "-reasoning"
-			}
-			currentReasoningMessageID = messageID
-			message := ensureMessage(messageID, "reasoning")
-			message.content.WriteString(asString(evt["delta"]))
+		case agui.EventReasoningMsgEnd:
+			messageID, _ := evt["messageId"].(string)
+			closeReasoningMessage(messageID)
 		case agui.EventReasoningEncrypted:
 			entityID, _ := evt["entityId"].(string)
 			encryptedValue, _ := evt["encryptedValue"].(string)
 			switch evt["subtype"] {
 			case "message":
-				ensureMessage(entityID, "reasoning").message.EncryptedValue = encryptedValue
+				ensureReasoningMessage(entityID).message.EncryptedValue = encryptedValue
 			case "tool-call":
 				if tool := toolCalls[entityID]; tool != nil {
 					tool.call.EncryptedValue = encryptedValue
@@ -290,6 +324,9 @@ func (t Run) FinalBeeperUIMessage(textBudget int, includeThinking bool) UIMessag
 	toolParts := map[string]MessagePart{}
 	currentTextMessageID := ""
 	currentReasoningMessageID := ""
+	openThinkingMessageID := ""
+	openThinkingPartID := ""
+	thinkingSegmentCounts := map[string]int{}
 	appendPart := func(part MessagePart) MessagePart {
 		message.Parts = append(message.Parts, part)
 		return part
@@ -308,18 +345,51 @@ func (t Run) FinalBeeperUIMessage(textBudget int, includeThinking bool) UIMessag
 	}
 	ensureThinkingPart := func(messageID string) *projectedPart {
 		if messageID == "" {
+			messageID = currentReasoningMessageID
+		}
+		if messageID == "" {
 			messageID = t.MessageID + "-reasoning"
 		}
-		if part := thinkingParts[messageID]; part != nil {
+		currentReasoningMessageID = messageID
+		if openThinkingMessageID != messageID || openThinkingPartID == "" {
+			index := thinkingSegmentCounts[messageID]
+			thinkingSegmentCounts[messageID] = index + 1
+			openThinkingMessageID = messageID
+			openThinkingPartID = messageID
+			if index > 0 {
+				openThinkingPartID = fmt.Sprintf("%s-segment-%d", messageID, index+1)
+			}
+		}
+		if part := thinkingParts[openThinkingPartID]; part != nil {
 			return part
 		}
-		part := appendPart(MessagePart{"type": "thinking", "id": messageID, "messageId": messageID, "content": "", "state": agui.PartStateStreaming})
+		part := appendPart(MessagePart{"type": "thinking", "id": openThinkingPartID, "messageId": messageID, "content": "", "state": agui.PartStateStreaming})
 		projected := &projectedPart{part: part}
-		thinkingParts[messageID] = projected
+		thinkingParts[openThinkingPartID] = projected
 		return projected
 	}
+	closeThinkingPart := func(messageID string) {
+		if messageID == "" {
+			messageID = currentReasoningMessageID
+		}
+		if messageID == "" {
+			messageID = openThinkingMessageID
+		}
+		if messageID != "" && openThinkingMessageID != messageID {
+			return
+		}
+		if part := thinkingParts[openThinkingPartID]; part != nil {
+			part.part["state"] = agui.PartStateDone
+		}
+		openThinkingMessageID = ""
+		openThinkingPartID = ""
+	}
 	for _, evt := range t.Events {
-		switch evt["type"] {
+		eventType, _ := evt["type"].(string)
+		if !isReasoningEventType(eventType) {
+			closeThinkingPart("")
+		}
+		switch eventType {
 		case agui.EventTextMessageStart:
 			messageID, _ := evt["messageId"].(string)
 			currentTextMessageID = messageID
@@ -352,7 +422,6 @@ func (t Run) FinalBeeperUIMessage(textBudget int, includeThinking bool) UIMessag
 				continue
 			}
 			messageID, _ := evt["messageId"].(string)
-			currentReasoningMessageID = messageID
 			ensureThinkingPart(messageID)
 		case agui.EventReasoningMsgCont:
 			delta, _ := evt["delta"].(string)
@@ -363,27 +432,20 @@ func (t Run) FinalBeeperUIMessage(textBudget int, includeThinking bool) UIMessag
 				continue
 			}
 			messageID, _ := evt["messageId"].(string)
-			if messageID == "" {
-				messageID = currentReasoningMessageID
-			}
 			ensureThinkingPart(messageID).content.WriteString(delta)
 		case agui.EventReasoningMsgChunk:
 			if !includeThinking {
 				continue
 			}
 			messageID, _ := evt["messageId"].(string)
-			if messageID == "" {
-				messageID = currentReasoningMessageID
-			}
-			currentReasoningMessageID = messageID
 			if delta, _ := evt["delta"].(string); delta != "" {
 				ensureThinkingPart(messageID).content.WriteString(delta)
+			} else {
+				closeThinkingPart(messageID)
 			}
 		case agui.EventReasoningMsgEnd:
 			messageID, _ := evt["messageId"].(string)
-			if part := thinkingParts[messageID]; part != nil {
-				part.part["state"] = agui.PartStateDone
-			}
+			closeThinkingPart(messageID)
 		case agui.EventToolCallStart:
 			toolCallID, _ := evt["toolCallId"].(string)
 			if toolCallID == "" {
@@ -512,6 +574,9 @@ func (t Run) FinalBeeperUIMessage(textBudget int, includeThinking bool) UIMessag
 				message.Parts = append(message.Parts, MessagePart{"type": "data-com-beeper-data", "data": value})
 			}
 		}
+	}
+	if t.Status.State != "" && t.Status.State != "streaming" {
+		closeThinkingPart("")
 	}
 	if t.Status.State != "" && t.Status.State != "streaming" {
 		for _, part := range toolParts {
@@ -651,6 +716,21 @@ func runFinishedInterrupts(value any) []agui.Interrupt {
 		}
 	}
 	return nil
+}
+
+func isReasoningEventType(eventType string) bool {
+	switch eventType {
+	case agui.EventReasoningStart,
+		agui.EventReasoningEnd,
+		agui.EventReasoningMsgStart,
+		agui.EventReasoningMsgCont,
+		agui.EventReasoningMsgEnd,
+		agui.EventReasoningMsgChunk,
+		agui.EventReasoningEncrypted:
+		return true
+	default:
+		return false
+	}
 }
 
 func (t Run) InitialBeeperUIMessage() UIMessage {

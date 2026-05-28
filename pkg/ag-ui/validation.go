@@ -17,6 +17,9 @@ func ValidateEvent(evt Event) error {
 		if err := require(evt, "threadId", "runId"); err != nil {
 			return err
 		}
+		if err := validateFinishReason(evt); err != nil {
+			return err
+		}
 		return validateRunFinishedOutcome(evt["outcome"])
 	case EventRunError:
 		return require(evt, "message")
@@ -110,6 +113,21 @@ func ValidateEvent(evt Event) error {
 	default:
 		return fmt.Errorf("unsupported ag-ui event type %q", eventType)
 	}
+}
+
+func validateFinishReason(evt Event) error {
+	raw, ok := evt["finishReason"]
+	if !ok {
+		return nil
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return fmt.Errorf("RUN_FINISHED has invalid finishReason %T", raw)
+	}
+	if !ValidFinishReason(value) {
+		return fmt.Errorf("RUN_FINISHED has invalid finishReason %q", value)
+	}
+	return nil
 }
 
 func validateRunFinishedOutcome(value any) error {

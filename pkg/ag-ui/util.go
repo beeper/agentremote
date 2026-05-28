@@ -7,19 +7,29 @@ import (
 )
 
 func NormalizeFinishReason(value string) string {
-	switch strings.TrimSpace(strings.ToLower(value)) {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	switch normalized {
 	case "", FinishReasonStop:
 		return FinishReasonStop
 	case FinishReasonLength:
 		return FinishReasonLength
-	case "content-filter", "contentfilter", FinishReasonContentFilter:
+	case FinishReasonContentFilter:
 		return FinishReasonContentFilter
-	case "tool-calls", "toolcalls", FinishReasonToolCalls:
+	case FinishReasonToolCalls:
 		return FinishReasonToolCalls
 	case FinishReasonOther:
 		return FinishReasonOther
 	default:
-		return FinishReasonStop
+		return normalized
+	}
+}
+
+func ValidFinishReason(value string) bool {
+	switch value {
+	case FinishReasonStop, FinishReasonLength, FinishReasonContentFilter, FinishReasonToolCalls, FinishReasonOther:
+		return true
+	default:
+		return false
 	}
 }
 
