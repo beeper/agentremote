@@ -42,53 +42,53 @@ func TestBuildersCoverLifecycleEventsWithTimestamps(t *testing.T) {
 	}
 	for _, evt := range events {
 		if err := ValidateEvent(evt); err != nil {
-			t.Fatalf("ValidateEvent(%s) returned error: %v", evt["type"], err)
+			t.Fatalf("ValidateEvent(%s) returned error: %v", evt.Type(), err)
 		}
-		if evt["timestamp"] == nil {
+		if evt.Get("timestamp") == nil {
 			t.Fatalf("event missing timestamp: %#v", evt)
 		}
 	}
-	if got := events[1]["finishReason"]; got != FinishReasonToolCalls {
+	if got := events[1].Get("finishReason"); got != FinishReasonToolCalls {
 		t.Fatalf("finish reason = %q, want %q", got, FinishReasonToolCalls)
 	}
-	if outcome, ok := events[1]["outcome"].(RunFinishedOutcome); !ok || outcome.Type != OutcomeSuccess {
-		t.Fatalf("run finished outcome = %#v, want success", events[1]["outcome"])
+	if outcome, ok := events[1].Get("outcome").(RunFinishedOutcome); !ok || outcome.Type != OutcomeSuccess {
+		t.Fatalf("run finished outcome = %#v, want success", events[1].Get("outcome"))
 	}
-	if got := events[2]["message"]; got != "failed" {
+	if got := events[2].Get("message"); got != "failed" {
 		t.Fatalf("run error message = %#v, want failed", got)
 	}
 	toolStart := events[14]
-	if got := toolStart["index"]; got != 1 {
+	if got := toolStart.Get("index"); got != 1 {
 		t.Fatalf("tool index = %#v, want 1", got)
 	}
-	if got := toolStart["parentMessageId"]; got != "msg" {
+	if got := toolStart.Get("parentMessageId"); got != "msg" {
 		t.Fatalf("tool parentMessageId = %#v, want msg", got)
 	}
-	if _, hasMessageID := toolStart["messageId"]; hasMessageID {
+	if toolStart.Has("messageId") {
 		t.Fatalf("tool start should not emit deprecated messageId: %#v", toolStart)
 	}
-	if _, hasSnapshot := events[21]["snapshot"]; !hasSnapshot {
+	if !events[21].Has("snapshot") {
 		t.Fatalf("state snapshot should emit snapshot field: %#v", events[21])
 	}
 }
 
 func TestValidateRejectsBadEvents(t *testing.T) {
 	tests := []Event{
-		{},
-		{"type": EventRunStarted, "threadId": "thread"},
-		{"type": EventRunError, "threadId": "thread", "error": map[string]any{"message": "failed"}},
-		{"type": EventTextMessageContent, "messageId": "msg"},
-		{"type": "REASONING_MESSAGE_CONTENT"},
-		{"type": EventReasoningEncrypted, "subtype": "bad", "entityId": "msg", "encryptedValue": "x"},
-		{"type": EventToolCallStart, "toolCallId": "tool", "toolCallName": "search", "state": "output-available"},
-		{"type": EventToolCallArgs, "toolCallId": "tool", "delta": 12},
-		{"type": EventToolCallEnd, "toolCallId": "tool", "result": `{"bad":true}`, "state": ToolStateInputComplete},
-		{"type": EventToolCallResult, "messageId": "msg", "toolCallId": "tool", "content": "{}", "state": "output-error"},
-		{"type": EventStepStarted, "stepId": "deprecated-only"},
-		{"type": EventStateSnapshot, "state": map[string]any{}},
-		{"type": EventActivitySnapshot, "messageId": "msg", "activityType": "thinking"},
-		{"type": EventActivityDelta, "messageId": "msg", "activityType": "thinking"},
-		{"type": EventRaw},
+		NewEvent(nil),
+		NewEvent(map[string]any{"type": EventRunStarted, "threadId": "thread"}),
+		NewEvent(map[string]any{"type": EventRunError, "threadId": "thread", "error": map[string]any{"message": "failed"}}),
+		NewEvent(map[string]any{"type": EventTextMessageContent, "messageId": "msg"}),
+		NewEvent(map[string]any{"type": "REASONING_MESSAGE_CONTENT"}),
+		NewEvent(map[string]any{"type": EventReasoningEncrypted, "subtype": "bad", "entityId": "msg", "encryptedValue": "x"}),
+		NewEvent(map[string]any{"type": EventToolCallStart, "toolCallId": "tool", "toolCallName": "search", "state": "output-available"}),
+		NewEvent(map[string]any{"type": EventToolCallArgs, "toolCallId": "tool", "delta": 12}),
+		NewEvent(map[string]any{"type": EventToolCallEnd, "toolCallId": "tool", "result": `{"bad":true}`, "state": ToolStateInputComplete}),
+		NewEvent(map[string]any{"type": EventToolCallResult, "messageId": "msg", "toolCallId": "tool", "content": "{}", "state": "output-error"}),
+		NewEvent(map[string]any{"type": EventStepStarted, "stepId": "deprecated-only"}),
+		NewEvent(map[string]any{"type": EventStateSnapshot, "state": map[string]any{}}),
+		NewEvent(map[string]any{"type": EventActivitySnapshot, "messageId": "msg", "activityType": "thinking"}),
+		NewEvent(map[string]any{"type": EventActivityDelta, "messageId": "msg", "activityType": "thinking"}),
+		NewEvent(map[string]any{"type": EventRaw}),
 	}
 	for _, evt := range tests {
 		if err := ValidateEvent(evt); err == nil {

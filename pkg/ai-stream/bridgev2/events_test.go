@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/beeper/ai-bridge/pkg/ag-ui"
 	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -31,12 +32,9 @@ func TestBridgeV2AIEvents(t *testing.T) {
 	if part.Type != event.EventMessage || part.Content.Body != "visible preview" {
 		t.Fatalf("unexpected anchor part: %#v", part)
 	}
-	if part.Extra[aistream.BeeperAIKey] == nil || part.Extra[aistream.BeeperAIMetadataKey] == nil {
+	ai, ok := part.Extra[aistream.BeeperAIKey].(aistream.BeeperAI)
+	if !ok || ai.Kind != aistream.AIKindAnchor || ai.Protocol != "ag-ui" {
 		t.Fatalf("anchor missing AI metadata: %#v", part.Extra)
-	}
-	stream, ok := part.Extra["com.beeper.stream"].(map[string]any)
-	if !ok || stream["type"] != aistream.BeeperAIStreamDeltas {
-		t.Fatalf("anchor missing stream descriptor: %#v", part.Extra)
 	}
 
 	carrier := Carrier(
@@ -44,10 +42,12 @@ func TestBridgeV2AIEvents(t *testing.T) {
 		networkid.UserID("ai"),
 		*run,
 		aistream.Carrier{Envelopes: []aistream.Envelope{{
-			Seq:         1,
-			RunID:       run.RunID,
-			ThreadID:    run.ThreadID,
-			TargetEvent: "$anchor",
+			Seq: 1,
+			Event: agui.NewEvent(map[string]any{
+				"type":      "TEXT_MESSAGE_CONTENT",
+				"messageId": run.MessageID,
+				"delta":     "hello",
+			}),
 		}}},
 		id.EventID("$anchor"),
 		1,
@@ -57,7 +57,8 @@ func TestBridgeV2AIEvents(t *testing.T) {
 	if carrierPart.Content.MsgType != event.MsgText || carrierPart.Content.Body != "" {
 		t.Fatalf("carrier should be hidden text carrier: %#v", carrierPart.Content)
 	}
-	if carrierPart.Extra[aistream.BeeperAIStreamDeltas] == nil {
+	ai, ok = carrierPart.Extra[aistream.BeeperAIKey].(aistream.BeeperAI)
+	if !ok || len(ai.Events) == 0 {
 		t.Fatalf("carrier missing deltas: %#v", carrierPart.Extra)
 	}
 
@@ -102,10 +103,8 @@ func TestFinalMetadataEditUsesCompactAnchorContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if converted.ModifiedParts[0].TopLevelExtra["com.beeper.stream"] != nil {
-		t.Fatalf("final metadata edit must clear top-level stream descriptor: %#v", converted.ModifiedParts[0].TopLevelExtra)
-	}
-	if converted.ModifiedParts[0].Extra["com.beeper.stream"] != nil {
-		t.Fatalf("final metadata edit must clear replacement stream descriptor: %#v", converted.ModifiedParts[0].Extra)
+	ai, ok := converted.ModifiedParts[0].Extra[aistream.BeeperAIKey].(aistream.BeeperAI)
+	if !ok || ai.Kind != aistream.AIKindFinal {
+		t.Fatalf("final metadata edit missing final AI payload: %#v", converted.ModifiedParts[0].Extra)
 	}
 }

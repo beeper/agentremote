@@ -50,12 +50,12 @@ func TestStreamPublisherUsesFakeProviderAndPublishesDeltas(t *testing.T) {
 	if len(publisher.updates) != 4 {
 		t.Fatalf("expected stream updates, got %#v", publisher.updates)
 	}
-	deltas, ok := publisher.updates[1][aistream.BeeperAIStreamDeltas].([]aistream.Envelope)
-	if !ok || len(deltas) != 2 {
+	aiPayload, ok := publisher.updates[1][aistream.BeeperAIKey].(aistream.BeeperAI)
+	if !ok || len(aiPayload.Events) != 2 {
 		t.Fatalf("unexpected first delta %#v", publisher.updates[1])
 	}
-	part := deltas[1].Part
-	if part["type"] != agui.EventTextMessageContent || part["delta"] != "hel" {
+	part := aiPayload.Events[1].Event
+	if part.Type() != agui.EventTextMessageContent || part.Get("delta") != "hel" {
 		t.Fatalf("unexpected first text part %#v", part)
 	}
 }
@@ -108,14 +108,14 @@ func TestStreamPublisherReusesRunAcrossToolContinuation(t *testing.T) {
 
 	runStarted := 0
 	for _, evt := range run.Events {
-		if evt["type"] == agui.EventRunStarted {
+		if evt.Type() == agui.EventRunStarted {
 			runStarted++
 		}
 	}
 	if runStarted != 1 {
 		t.Fatalf("expected one run start event, got %d in %#v", runStarted, run.Events)
 	}
-	message := run.FinalBeeperUIMessage(0, true)
+	message := run.FinalBeeperAIMessage(0, true)
 	if message.ID != "assistant:run" || len(message.Parts) != 2 {
 		t.Fatalf("expected one assistant UI message with text and tool parts, got %#v", message)
 	}
@@ -147,7 +147,7 @@ func TestAppendToolOutputsPreservesStructuredResult(t *testing.T) {
 		},
 	}})
 
-	message := run.FinalBeeperUIMessage(0, true)
+	message := run.FinalBeeperAIMessage(0, true)
 	if len(message.Parts) != 1 {
 		t.Fatalf("expected one tool part, got %#v", message.Parts)
 	}
@@ -254,8 +254,8 @@ func TestApplyAIStreamDonePublishesProviderUsageInFinalAGUIEvents(t *testing.T) 
 	}
 	var finished agui.Usage
 	for _, evt := range run.Events {
-		if evt["type"] == agui.EventRunFinished {
-			finished = evt["usage"].(agui.Usage)
+		if evt.Type() == agui.EventRunFinished {
+			finished = evt.Get("usage").(agui.Usage)
 		}
 	}
 	if finished != want {
@@ -282,13 +282,13 @@ func TestApplyAIStreamEventStreamsToolCallsFromPartialContent(t *testing.T) {
 
 	var sawStart, sawArgs bool
 	for _, evt := range run.Events {
-		switch evt["type"] {
+		switch evt.Type() {
 		case agui.EventToolCallStart:
-			sawStart = evt["toolCallId"] == "call-1" && evt["toolName"] == "read_file"
+			sawStart = evt.Get("toolCallId") == "call-1" && evt.Get("toolName") == "read_file"
 		case agui.EventToolCallArgs:
-			sawArgs = evt["toolCallId"] == "call-1" && evt["delta"] == `{"path":"README.md"}`
-			if args, ok := evt["args"].(map[string]any); !ok || args["path"] != "README.md" {
-				t.Fatalf("expected streamed tool args, got %#v", evt["args"])
+			sawArgs = evt.Get("toolCallId") == "call-1" && evt.Get("delta") == `{"path":"README.md"}`
+			if args, ok := evt.Get("args").(map[string]any); !ok || args["path"] != "README.md" {
+				t.Fatalf("expected streamed tool args, got %#v", evt.Get("args"))
 			}
 		}
 	}
@@ -304,10 +304,10 @@ func TestApplyAIStreamEventPublishesRawProviderEvent(t *testing.T) {
 
 	applyAIStreamEvent(writer, ai.AssistantMessageEvent{Type: "raw", RawEvent: raw, RawSource: "openai"})
 
-	if len(run.Events) != 1 || run.Events[0]["type"] != agui.EventRaw || run.Events[0]["source"] != "openai" {
+	if len(run.Events) != 1 || run.Events[0].Type() != agui.EventRaw || run.Events[0].Get("source") != "openai" {
 		t.Fatalf("expected AG-UI RAW event, got %#v", run.Events)
 	}
-	if event, ok := run.Events[0]["event"].(map[string]any); !ok || event["type"] != "response.created" {
+	if event, ok := run.Events[0].Get("event").(map[string]any); !ok || event["type"] != "response.created" {
 		t.Fatalf("raw provider event was not preserved: %#v", run.Events[0])
 	}
 }
@@ -342,17 +342,17 @@ func TestPublishToolOutputStreamsLiveResult(t *testing.T) {
 	if len(publisher.updates) != 1 {
 		t.Fatalf("expected one live stream update, got %#v", publisher.updates)
 	}
-	deltas, ok := publisher.updates[0][aistream.BeeperAIStreamDeltas].([]aistream.Envelope)
-	if !ok || len(deltas) != 2 {
+	aiPayload, ok := publisher.updates[0][aistream.BeeperAIKey].(aistream.BeeperAI)
+	if !ok || len(aiPayload.Events) != 2 {
 		t.Fatalf("unexpected live stream carrier %#v", publisher.updates[0])
 	}
-	part := deltas[1].Part
-	if part["type"] != agui.EventToolCallResult || part["toolCallId"] != "call-1" {
+	part := aiPayload.Events[1].Event
+	if part.Type() != agui.EventToolCallResult || part.Get("toolCallId") != "call-1" {
 		t.Fatalf("expected live tool result event, got %#v", part)
 	}
-	result, ok := part["content"].(string)
+	result, ok := part.Get("content").(string)
 	if !ok || result == "" {
-		t.Fatalf("expected encoded tool result, got %#v", part["content"])
+		t.Fatalf("expected encoded tool result, got %#v", part.Get("content"))
 	}
 }
 

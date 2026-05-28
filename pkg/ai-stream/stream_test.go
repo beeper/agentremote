@@ -17,7 +17,7 @@ func TestPackRunSplitsOver64KBAndReconstructs(t *testing.T) {
 	writer.Text(strings.Repeat("a", 70*1024))
 	writer.Finish(agui.FinishReasonStop)
 
-	carriers, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
+	carriers, err := PackRun(*run, CarrierBudgetBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestPackRunSplitsOver64KBAndReconstructs(t *testing.T) {
 		t.Fatalf("expected multiple carriers for over-64KB output, got %d", len(carriers))
 	}
 	for i, carrier := range carriers {
-		if size := JSONSize(CarrierContent(carrier.Envelopes)); size > CarrierBudgetBytes {
+		if size := JSONSize(CarrierContent(*run, carrier.Envelopes)); size > CarrierBudgetBytes {
 			t.Fatalf("carrier %d is %d bytes, budget %d", i, size, CarrierBudgetBytes)
 		}
 	}
@@ -41,11 +41,11 @@ func TestPackRunDoesNotPutFinalizationTotalsOnStreamEnvelopes(t *testing.T) {
 	writer.Text("hello")
 	writer.Finish(agui.FinishReasonStop)
 
-	carriers, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
+	carriers, err := PackRun(*run, CarrierBudgetBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := json.Marshal(CarrierContent(carriers[0].Envelopes))
+	raw, err := json.Marshal(CarrierContent(*run, carriers[0].Envelopes))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,26 +65,25 @@ func TestFinalSnapshotUsesCanonicalMessagesAndCompactsLargeContent(t *testing.T)
 	writer.ToolEnd("tool-1", "fetch", `{"url":"https://example.com"}`, map[string]any{"ok": true})
 	writer.Finish(agui.FinishReasonStop)
 
-	carriers, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
+	carriers, err := PackRun(*run, CarrierBudgetBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var snapshots int
-	var sawMetadata bool
 	var sawAssistant bool
 	var sawReasoning bool
 	var sawToolResult bool
 	for i, carrier := range carriers {
-		if size := JSONSize(CarrierContent(carrier.Envelopes)); size > CarrierBudgetBytes {
+		if size := JSONSize(CarrierContent(*run, carrier.Envelopes)); size > CarrierBudgetBytes {
 			t.Fatalf("carrier %d is %d bytes, budget %d", i, size, CarrierBudgetBytes)
 		}
 		for _, env := range carrier.Envelopes {
-			switch env.Part["type"] {
+			switch env.Event.Type() {
 			case agui.EventMessagesSnapshot:
 				snapshots++
-				messages, ok := env.Part["messages"].([]any)
+				messages, ok := env.Event.Get("messages").([]any)
 				if !ok || len(messages) == 0 {
-					t.Fatalf("bad final snapshot: %#v", env.Part["messages"])
+					t.Fatalf("bad final snapshot: %#v", env.Event.Get("messages"))
 				}
 				for _, rawMessage := range messages {
 					message, ok := rawMessage.(map[string]any)
@@ -95,10 +94,7 @@ func TestFinalSnapshotUsesCanonicalMessagesAndCompactsLargeContent(t *testing.T)
 					case agui.RoleAssistant:
 						sawAssistant = true
 						metadata, ok := message["metadata"].(map[string]any)
-						if ok && metadata["runId"] == "run-1" {
-							sawMetadata = true
-						}
-						if metadata["contentTruncated"] != true {
+						if !ok || metadata["contentTruncated"] != true {
 							t.Fatalf("large assistant snapshot should be compacted: %#v", message)
 						}
 					case "reasoning":
@@ -114,8 +110,8 @@ func TestFinalSnapshotUsesCanonicalMessagesAndCompactsLargeContent(t *testing.T)
 			}
 		}
 	}
-	if snapshots != 1 || !sawMetadata || !sawAssistant || !sawReasoning || !sawToolResult {
-		t.Fatalf("expected canonical compact snapshot with assistant/reasoning/tool messages, snapshots=%d metadata=%v assistant=%v reasoning=%v tool=%v", snapshots, sawMetadata, sawAssistant, sawReasoning, sawToolResult)
+	if snapshots != 1 || !sawAssistant || !sawReasoning || !sawToolResult {
+		t.Fatalf("expected canonical compact snapshot with assistant/reasoning/tool messages, snapshots=%d assistant=%v reasoning=%v tool=%v", snapshots, sawAssistant, sawReasoning, sawToolResult)
 	}
 }
 
@@ -131,7 +127,7 @@ func TestPackRunUsesDeltaEventsInsteadOfAccumulatedText(t *testing.T) {
 	writer.Text("def")
 	writer.Finish(agui.FinishReasonStop)
 
-	carriers, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
+	carriers, err := PackRun(*run, CarrierBudgetBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +137,8 @@ func TestPackRunUsesDeltaEventsInsteadOfAccumulatedText(t *testing.T) {
 	var deltas []string
 	for _, carrier := range carriers {
 		for _, env := range carrier.Envelopes {
-			if env.Part["type"] == agui.EventTextMessageContent {
-				deltas = append(deltas, env.Part["delta"].(string))
+			if env.Event.Type() == agui.EventTextMessageContent {
+				deltas = append(deltas, env.Event.Get("delta").(string))
 			}
 		}
 	}
@@ -170,7 +166,7 @@ func TestWriterKeepsReasoningMessagesSeparate(t *testing.T) {
 		t.Fatalf("reasoning messages were not preserved individually: %#v", reasoning)
 	}
 
-	uiMessage := run.FinalBeeperUIMessage(0, true)
+	uiMessage := run.FinalBeeperAIMessage(0, true)
 	var thinkingParts []string
 	for _, part := range uiMessage.Parts {
 		if part["type"] == "thinking" {
@@ -211,7 +207,7 @@ func TestInterleavedReasoningContentStaysSeparateInFinalProjections(t *testing.T
 		t.Fatalf("interleaved reasoning messages were not preserved individually: %#v", reasoning)
 	}
 
-	uiMessage := run.FinalBeeperUIMessage(0, true)
+	uiMessage := run.FinalBeeperAIMessage(0, true)
 	var thinkingParts []string
 	for _, part := range uiMessage.Parts {
 		if part["type"] == "thinking" {
@@ -230,17 +226,17 @@ func TestRawEventIsTruncatedBeforePacking(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
 	run.Events = append(run.Events, builder.Custom("com.beeper.debug", map[string]any{"ok": true}))
-	run.Events[0]["rawEvent"] = strings.Repeat("x", CarrierBudgetBytes)
+	run.Events[0].Set("rawEvent", strings.Repeat("x", CarrierBudgetBytes))
 
-	carriers, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
+	carriers, err := PackRun(*run, CarrierBudgetBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	part := carriers[0].Envelopes[0].Part
-	if part["rawEventTruncated"] != true {
+	part := carriers[0].Envelopes[0].Event
+	if part.Get("rawEventTruncated") != true {
 		t.Fatalf("expected rawEventTruncated marker, got %#v", part)
 	}
-	if size := JSONSize(CarrierContent(carriers[0].Envelopes)); size > CarrierBudgetBytes {
+	if size := JSONSize(CarrierContent(*run, carriers[0].Envelopes)); size > CarrierBudgetBytes {
 		t.Fatalf("carrier size = %d, budget %d", size, CarrierBudgetBytes)
 	}
 }
@@ -253,15 +249,15 @@ func TestRawAGUIEventIsTruncatedBeforePacking(t *testing.T) {
 		"data": strings.Repeat("x", CarrierBudgetBytes),
 	}, "openai"))
 
-	carriers, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
+	carriers, err := PackRun(*run, CarrierBudgetBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	part := carriers[0].Envelopes[0].Part
-	if part["rawEventTruncated"] != true {
+	part := carriers[0].Envelopes[0].Event
+	if part.Get("rawEventTruncated") != true {
 		t.Fatalf("expected raw event truncation marker, got %#v", part)
 	}
-	if size := JSONSize(CarrierContent(carriers[0].Envelopes)); size > CarrierBudgetBytes {
+	if size := JSONSize(CarrierContent(*run, carriers[0].Envelopes)); size > CarrierBudgetBytes {
 		t.Fatalf("carrier size = %d, budget %d", size, CarrierBudgetBytes)
 	}
 }
@@ -273,7 +269,7 @@ func TestPackRunRejectsOversizedNonTextEvent(t *testing.T) {
 		"value": strings.Repeat("x", CarrierBudgetBytes),
 	}))
 
-	_, err := PackRun(*run, "$anchor", CarrierBudgetBytes)
+	_, err := PackRun(*run, CarrierBudgetBytes)
 	if err == nil {
 		t.Fatal("expected oversized non-text event to fail packing")
 	}
@@ -285,14 +281,14 @@ func TestValidateRejectsLegacyOrInvalidToolResultShape(t *testing.T) {
 	run.Events = append(run.Events,
 		builder.RunStarted("thread-1", "run-1"),
 		builder.ToolCallStart("msg-run-1", "tool-1", "fetch", nil),
-		agui.Event{"type": agui.EventToolCallEnd, "toolCallId": "tool-1", "result": `{"ok":true}`, "state": agui.ToolStateInputComplete},
+		agui.NewEvent(map[string]any{"type": agui.EventToolCallEnd, "toolCallId": "tool-1", "result": `{"ok":true}`, "state": agui.ToolStateInputComplete}),
 	)
 	if err := run.Validate(); err == nil {
 		t.Fatal("expected validation error for legacy TOOL_CALL_END.result")
 	}
 }
 
-func TestFinalBeeperUIMessageCarriesToolCallMetadata(t *testing.T) {
+func TestFinalBeeperAIMessageCarriesToolCallMetadata(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.ToolStartWithMetadata("tool-1", "calendar.get_events", 0, nil, map[string]any{
@@ -300,7 +296,7 @@ func TestFinalBeeperUIMessageCarriesToolCallMetadata(t *testing.T) {
 		"iconUrl":     "mxc://beeper.com/calendar",
 	})
 
-	message := run.FinalBeeperUIMessage(0, true)
+	message := run.FinalBeeperAIMessage(0, true)
 	if len(message.Parts) != 1 {
 		t.Fatalf("expected one part, got %#v", message.Parts)
 	}
@@ -310,7 +306,7 @@ func TestFinalBeeperUIMessageCarriesToolCallMetadata(t *testing.T) {
 	}
 }
 
-func TestFinalBeeperUIMessageCarriesParsedToolOutputs(t *testing.T) {
+func TestFinalBeeperAIMessageCarriesParsedToolOutputs(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.ToolStart("tool-1", "fetch", 0, nil)
@@ -319,7 +315,7 @@ func TestFinalBeeperUIMessageCarriesParsedToolOutputs(t *testing.T) {
 	writer.ToolStart("tool-2", "files", 1, nil)
 	writer.ToolError("tool-2", "files", map[string]any{"path": "/tmp/nope"}, "missing")
 
-	message := run.FinalBeeperUIMessage(0, true)
+	message := run.FinalBeeperAIMessage(0, true)
 	if len(message.Parts) != 2 {
 		t.Fatalf("expected two tool parts, got %#v", message.Parts)
 	}
@@ -333,13 +329,13 @@ func TestFinalBeeperUIMessageCarriesParsedToolOutputs(t *testing.T) {
 	}
 }
 
-func TestFinalBeeperUIMessageCollapsesToolResultIntoToolCall(t *testing.T) {
+func TestFinalBeeperAIMessageCollapsesToolResultIntoToolCall(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.ToolStart("tool-1", "fetch", 0, nil)
 	writer.ToolResult("tool-1", `{"ok":true}`, agui.ToolResultStateComplete)
 
-	message := run.FinalBeeperUIMessage(0, true)
+	message := run.FinalBeeperAIMessage(0, true)
 	if len(message.Parts) != 1 {
 		t.Fatalf("expected tool result to be folded into one tool-call part, got %#v", message.Parts)
 	}
@@ -352,14 +348,14 @@ func TestFinalBeeperUIMessageCollapsesToolResultIntoToolCall(t *testing.T) {
 	}
 }
 
-func TestFinalBeeperUIMessageFailsOpenToolsWhenRunFinalized(t *testing.T) {
+func TestFinalBeeperAIMessageFailsOpenToolsWhenRunFinalized(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.ToolStart("tool-1", "summarize", 0, nil)
 	writer.ToolStart("tool-2", "calendar", 1, nil)
 	writer.Finish(agui.FinishReasonStop)
 
-	message := run.FinalBeeperUIMessage(0, true)
+	message := run.FinalBeeperAIMessage(0, true)
 	if len(message.Parts) != 2 {
 		t.Fatalf("expected two tool parts, got %#v", message.Parts)
 	}
@@ -374,7 +370,7 @@ func TestFinalBeeperUIMessageFailsOpenToolsWhenRunFinalized(t *testing.T) {
 	}
 }
 
-func TestFinalBeeperUIMessageCarriesTopLevelArtifactsWithStableIDs(t *testing.T) {
+func TestFinalBeeperAIMessageCarriesTopLevelArtifactsWithStableIDs(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.Custom("com.beeper.source", map[string]any{
@@ -392,7 +388,7 @@ func TestFinalBeeperUIMessageCarriesTopLevelArtifactsWithStableIDs(t *testing.T)
 		"mediaType": "application/octet-stream",
 	})
 
-	message := run.FinalBeeperUIMessage(0, true)
+	message := run.FinalBeeperAIMessage(0, true)
 	if len(message.Parts) != 3 {
 		t.Fatalf("expected artifact parts, got %#v", message.Parts)
 	}
@@ -578,7 +574,7 @@ func TestRunMetadataOwnsMatrixPayloadShape(t *testing.T) {
 
 	metadata := run.Metadata()
 
-	if metadata["schema"] != "com.beeper.ai.run.v1" || metadata["protocol"] != "ag-ui" {
+	if metadata["schema"] != BeeperAISchema || metadata["protocol"] != "ag-ui" {
 		t.Fatalf("bad protocol metadata: %#v", metadata)
 	}
 	if metadata["threadId"] != "thread-1" || metadata["runId"] != "run-1" || metadata["messageId"] != "msg-run-1" {
@@ -609,22 +605,15 @@ func TestFinishWithUsageCarriesProviderUsageToTerminalEvents(t *testing.T) {
 	if run.Usage != usage {
 		t.Fatalf("run usage was not preserved: %#v", run.Usage)
 	}
-	var snapshotUsage, finishedUsage agui.Usage
+	var finishedUsage agui.Usage
 	for _, evt := range run.Events {
-		switch evt["type"] {
-		case agui.EventMessagesSnapshot:
-			messages := evt["messages"].([]agui.Message)
-			for _, message := range messages {
-				if message.ID == run.MessageID {
-					snapshotUsage = message.Metadata["usage"].(agui.Usage)
-				}
-			}
+		switch evt.Type() {
 		case agui.EventRunFinished:
-			finishedUsage = evt["usage"].(agui.Usage)
+			finishedUsage = evt.Get("usage").(agui.Usage)
 		}
 	}
-	if snapshotUsage != usage || finishedUsage != usage {
-		t.Fatalf("terminal events lost usage: snapshot=%#v finished=%#v", snapshotUsage, finishedUsage)
+	if finishedUsage != usage {
+		t.Fatalf("terminal event lost usage: finished=%#v", finishedUsage)
 	}
 }
 
@@ -673,5 +662,33 @@ func TestCleanupKeepsSelectedUserReactionAndRemovesBridgeOptions(t *testing.T) {
 	got := strings.Join(cleanup.RedactReactionEvents, ",")
 	if !strings.Contains(got, "$bridge-allow") || !strings.Contains(got, "$bridge-deny") || !strings.Contains(got, "$user-deny") {
 		t.Fatalf("bad cleanup redactions: %#v", cleanup.RedactReactionEvents)
+	}
+}
+
+func TestApprovalQueueKeepsOneActiveInterruptAndTimeouts(t *testing.T) {
+	queue := NewApprovalQueue(ApprovalTimeout{After: time.Minute})
+	queue.AddAll([]ApprovalPrompt{
+		{ID: "approval-1", ToolCallID: "tool-1", ToolName: "shell"},
+		{ID: "approval-2", ToolCallID: "tool-2", ToolName: "fetch"},
+	})
+
+	active, ok := queue.Active()
+	if !ok || active.ID != "approval-1" {
+		t.Fatalf("bad active approval: %#v ok=%v", active, ok)
+	}
+	if pending := queue.Pending(); len(pending) != 1 || pending[0].ID != "approval-2" {
+		t.Fatalf("bad queued approvals: %#v", pending)
+	}
+	resolved, response, ok := queue.TimeoutActive()
+	if !ok || resolved.ID != "approval-1" || response.ID != "approval-1" || response.Approved || response.Reason != "timed_out" {
+		t.Fatalf("bad timeout resolution: prompt=%#v response=%#v ok=%v", resolved, response, ok)
+	}
+	active, ok = queue.Active()
+	if !ok || active.ID != "approval-2" {
+		t.Fatalf("queue did not promote next approval: %#v ok=%v", active, ok)
+	}
+	result := TimedOutApprovalToolResult("approval-1")
+	if result.Status != "timed_out" || result.State != agui.ToolResultStateError || result.Approved {
+		t.Fatalf("bad timed-out tool result: %#v", result)
 	}
 }

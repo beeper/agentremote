@@ -79,13 +79,13 @@ func (t Run) Messages(includeReasoning bool) []agui.Message {
 		if tool := toolCalls[toolCallID]; tool != nil {
 			return tool
 		}
-		parentID, _ := evt["parentMessageId"].(string)
+		parentID, _ := evt.Get("parentMessageId").(string)
 		parent := ensureMessage(parentID, agui.RoleAssistant)
 		call := &agui.MessageToolCall{
 			ID:   toolCallID,
 			Type: "function",
 			Function: agui.ToolCallFunction{
-				Name: firstString(evt["toolName"], evt["toolCallName"]),
+				Name: firstString(evt.Get("toolName"), evt.Get("toolCallName")),
 			},
 		}
 		if parent.toolCalls == nil {
@@ -130,25 +130,25 @@ func (t Run) Messages(includeReasoning bool) []agui.Message {
 	}
 
 	for _, evt := range t.Events {
-		eventType, _ := evt["type"].(string)
+		eventType := evt.Type()
 		if !isReasoningEventType(eventType) {
 			closeReasoningMessage("")
 		}
 		switch eventType {
 		case agui.EventTextMessageStart:
-			messageID, _ := evt["messageId"].(string)
-			role := firstString(evt["role"], agui.RoleAssistant)
+			messageID, _ := evt.Get("messageId").(string)
+			role := firstString(evt.Get("role"), agui.RoleAssistant)
 			ensureMessage(messageID, role)
 			currentTextMessageID = messageID
 		case agui.EventTextMessageContent:
-			messageID, _ := evt["messageId"].(string)
+			messageID, _ := evt.Get("messageId").(string)
 			if messageID == "" {
 				messageID = currentTextMessageID
 			}
 			message := ensureMessage(messageID, agui.RoleAssistant)
-			message.content.WriteString(asString(evt["delta"]))
+			message.content.WriteString(asString(evt.Get("delta")))
 		case agui.EventTextMessageChunk:
-			messageID, _ := evt["messageId"].(string)
+			messageID, _ := evt.Get("messageId").(string)
 			if messageID == "" {
 				messageID = currentTextMessageID
 			}
@@ -156,39 +156,39 @@ func (t Run) Messages(includeReasoning bool) []agui.Message {
 				messageID = t.MessageID
 			}
 			currentTextMessageID = messageID
-			message := ensureMessage(messageID, firstString(evt["role"], agui.RoleAssistant))
-			message.content.WriteString(asString(evt["delta"]))
+			message := ensureMessage(messageID, firstString(evt.Get("role"), agui.RoleAssistant))
+			message.content.WriteString(asString(evt.Get("delta")))
 		case agui.EventReasoningMsgStart:
 			if !includeReasoning {
 				continue
 			}
-			messageID, _ := evt["messageId"].(string)
+			messageID, _ := evt.Get("messageId").(string)
 			ensureReasoningMessage(messageID)
 		case agui.EventReasoningMsgCont:
 			if !includeReasoning {
 				continue
 			}
-			messageID, _ := evt["messageId"].(string)
+			messageID, _ := evt.Get("messageId").(string)
 			message := ensureReasoningMessage(messageID)
-			message.content.WriteString(asString(evt["delta"]))
+			message.content.WriteString(asString(evt.Get("delta")))
 		case agui.EventReasoningMsgChunk:
 			if !includeReasoning {
 				continue
 			}
-			messageID, _ := evt["messageId"].(string)
-			if delta := asString(evt["delta"]); delta != "" {
+			messageID, _ := evt.Get("messageId").(string)
+			if delta := asString(evt.Get("delta")); delta != "" {
 				message := ensureReasoningMessage(messageID)
 				message.content.WriteString(delta)
 			} else {
 				closeReasoningMessage(messageID)
 			}
 		case agui.EventReasoningMsgEnd:
-			messageID, _ := evt["messageId"].(string)
+			messageID, _ := evt.Get("messageId").(string)
 			closeReasoningMessage(messageID)
 		case agui.EventReasoningEncrypted:
-			entityID, _ := evt["entityId"].(string)
-			encryptedValue, _ := evt["encryptedValue"].(string)
-			switch evt["subtype"] {
+			entityID, _ := evt.Get("entityId").(string)
+			encryptedValue, _ := evt.Get("encryptedValue").(string)
+			switch evt.Get("subtype") {
 			case "message":
 				ensureReasoningMessage(entityID).message.EncryptedValue = encryptedValue
 			case "tool-call":
@@ -197,57 +197,57 @@ func (t Run) Messages(includeReasoning bool) []agui.Message {
 				}
 			}
 		case agui.EventToolCallStart:
-			toolCallID, _ := evt["toolCallId"].(string)
+			toolCallID, _ := evt.Get("toolCallId").(string)
 			tool := ensureToolCall(toolCallID, evt)
 			if tool != nil && tool.call.Function.Name == "" {
-				tool.call.Function.Name = firstString(evt["toolName"], evt["toolCallName"])
+				tool.call.Function.Name = firstString(evt.Get("toolName"), evt.Get("toolCallName"))
 			}
 		case agui.EventToolCallArgs:
-			toolCallID, _ := evt["toolCallId"].(string)
+			toolCallID, _ := evt.Get("toolCallId").(string)
 			tool := ensureToolCall(toolCallID, evt)
 			if tool == nil {
 				continue
 			}
-			if delta, _ := evt["delta"].(string); delta != "" {
+			if delta, _ := evt.Get("delta").(string); delta != "" {
 				tool.args.WriteString(delta)
 				tool.call.Function.Arguments = tool.args.String()
 			}
-			if args, ok := evt["args"]; ok {
+			if args := evt.Get("args"); args != nil {
 				tool.call.Function.Arguments = asString(jsonString(args))
 			}
 		case agui.EventToolCallChunk:
-			toolCallID, _ := evt["toolCallId"].(string)
+			toolCallID, _ := evt.Get("toolCallId").(string)
 			tool := ensureToolCall(toolCallID, evt)
 			if tool == nil {
 				continue
 			}
 			if tool.call.Function.Name == "" {
-				tool.call.Function.Name = firstString(evt["toolName"], evt["toolCallName"])
+				tool.call.Function.Name = firstString(evt.Get("toolName"), evt.Get("toolCallName"))
 			}
-			if delta, _ := evt["delta"].(string); delta != "" {
+			if delta, _ := evt.Get("delta").(string); delta != "" {
 				tool.args.WriteString(delta)
 				tool.call.Function.Arguments = tool.args.String()
 			}
 		case agui.EventToolCallEnd:
-			toolCallID, _ := evt["toolCallId"].(string)
+			toolCallID, _ := evt.Get("toolCallId").(string)
 			tool := ensureToolCall(toolCallID, evt)
 			if tool != nil && tool.call.Function.Name == "" {
-				tool.call.Function.Name = firstString(evt["toolName"], evt["toolCallName"])
+				tool.call.Function.Name = firstString(evt.Get("toolName"), evt.Get("toolCallName"))
 			}
 		case agui.EventToolCallResult:
-			messageID, _ := evt["messageId"].(string)
-			toolCallID, _ := evt["toolCallId"].(string)
-			message := ensureMessage(messageID, firstString(evt["role"], agui.RoleTool))
+			messageID, _ := evt.Get("messageId").(string)
+			toolCallID, _ := evt.Get("toolCallId").(string)
+			message := ensureMessage(messageID, firstString(evt.Get("role"), agui.RoleTool))
 			message.message.ToolCallID = toolCallID
-			message.content.WriteString(asString(evt["content"]))
-			if state, _ := evt["state"].(string); state == agui.ToolResultStateError {
-				message.message.Error = asString(evt["error"])
+			message.content.WriteString(asString(evt.Get("content")))
+			if state, _ := evt.Get("state").(string); state == agui.ToolResultStateError {
+				message.message.Error = asString(evt.Get("error"))
 			}
 		case agui.EventActivitySnapshot:
-			messageID, _ := evt["messageId"].(string)
+			messageID, _ := evt.Get("messageId").(string)
 			message := ensureMessage(messageID, "activity")
-			message.message.ActivityType = firstString(evt["activityType"])
-			if content, ok := evt["content"].(map[string]any); ok {
+			message.message.ActivityType = firstString(evt.Get("activityType"))
+			if content, ok := evt.Get("content").(map[string]any); ok {
 				message.message.Content = content
 			}
 		}
@@ -286,10 +286,10 @@ func (t Run) Messages(includeReasoning bool) []agui.Message {
 func latestMessagesSnapshot(events []agui.Event, includeReasoning bool) []agui.Message {
 	var snapshot []agui.Message
 	for _, evt := range events {
-		if evt["type"] != agui.EventMessagesSnapshot {
+		if evt.Type() != agui.EventMessagesSnapshot {
 			continue
 		}
-		messages, ok := evt["messages"].([]agui.Message)
+		messages, ok := evt.Get("messages").([]agui.Message)
 		if !ok {
 			continue
 		}
@@ -313,11 +313,10 @@ type projectedPart struct {
 	content strings.Builder
 }
 
-func (t Run) FinalBeeperUIMessage(textBudget int, includeThinking bool) UIMessage {
+func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessage {
 	message := UIMessage{
-		ID:       t.MessageID,
-		Role:     agui.RoleAssistant,
-		Metadata: t.UIMessageMetadata(true).Map(),
+		ID:   t.MessageID,
+		Role: agui.RoleAssistant,
 	}
 	textParts := map[string]*projectedPart{}
 	thinkingParts := map[string]*projectedPart{}
@@ -385,35 +384,35 @@ func (t Run) FinalBeeperUIMessage(textBudget int, includeThinking bool) UIMessag
 		openThinkingPartID = ""
 	}
 	for _, evt := range t.Events {
-		eventType, _ := evt["type"].(string)
+		eventType := evt.Type()
 		if !isReasoningEventType(eventType) {
 			closeThinkingPart("")
 		}
 		switch eventType {
 		case agui.EventTextMessageStart:
-			messageID, _ := evt["messageId"].(string)
+			messageID, _ := evt.Get("messageId").(string)
 			currentTextMessageID = messageID
 		case agui.EventTextMessageContent:
-			delta, _ := evt["delta"].(string)
+			delta, _ := evt.Get("delta").(string)
 			if delta == "" {
 				continue
 			}
-			messageID, _ := evt["messageId"].(string)
+			messageID, _ := evt.Get("messageId").(string)
 			if messageID == "" {
 				messageID = currentTextMessageID
 			}
 			ensureTextPart(messageID).content.WriteString(delta)
 		case agui.EventTextMessageChunk:
-			messageID, _ := evt["messageId"].(string)
+			messageID, _ := evt.Get("messageId").(string)
 			if messageID == "" {
 				messageID = currentTextMessageID
 			}
 			currentTextMessageID = messageID
-			if delta, _ := evt["delta"].(string); delta != "" {
+			if delta, _ := evt.Get("delta").(string); delta != "" {
 				ensureTextPart(messageID).content.WriteString(delta)
 			}
 		case agui.EventTextMessageEnd:
-			messageID, _ := evt["messageId"].(string)
+			messageID, _ := evt.Get("messageId").(string)
 			if part := textParts[messageID]; part != nil {
 				part.part["state"] = agui.PartStateDone
 			}
@@ -421,33 +420,33 @@ func (t Run) FinalBeeperUIMessage(textBudget int, includeThinking bool) UIMessag
 			if !includeThinking {
 				continue
 			}
-			messageID, _ := evt["messageId"].(string)
+			messageID, _ := evt.Get("messageId").(string)
 			ensureThinkingPart(messageID)
 		case agui.EventReasoningMsgCont:
-			delta, _ := evt["delta"].(string)
+			delta, _ := evt.Get("delta").(string)
 			if delta == "" {
 				continue
 			}
 			if !includeThinking {
 				continue
 			}
-			messageID, _ := evt["messageId"].(string)
+			messageID, _ := evt.Get("messageId").(string)
 			ensureThinkingPart(messageID).content.WriteString(delta)
 		case agui.EventReasoningMsgChunk:
 			if !includeThinking {
 				continue
 			}
-			messageID, _ := evt["messageId"].(string)
-			if delta, _ := evt["delta"].(string); delta != "" {
+			messageID, _ := evt.Get("messageId").(string)
+			if delta, _ := evt.Get("delta").(string); delta != "" {
 				ensureThinkingPart(messageID).content.WriteString(delta)
 			} else {
 				closeThinkingPart(messageID)
 			}
 		case agui.EventReasoningMsgEnd:
-			messageID, _ := evt["messageId"].(string)
+			messageID, _ := evt.Get("messageId").(string)
 			closeThinkingPart(messageID)
 		case agui.EventToolCallStart:
-			toolCallID, _ := evt["toolCallId"].(string)
+			toolCallID, _ := evt.Get("toolCallId").(string)
 			if toolCallID == "" {
 				continue
 			}
@@ -455,48 +454,48 @@ func (t Run) FinalBeeperUIMessage(textBudget int, includeThinking bool) UIMessag
 				"type":       "tool-call",
 				"id":         toolCallID,
 				"toolCallId": toolCallID,
-				"name":       firstString(evt["toolName"], evt["toolCallName"]),
+				"name":       firstString(evt.Get("toolName"), evt.Get("toolCallName")),
 				"arguments":  "",
-				"state":      firstString(evt["state"]),
+				"state":      firstString(evt.Get("state")),
 			}
-			if index, ok := evt["index"]; ok {
+			if index := evt.Get("index"); index != nil {
 				part["index"] = index
 			}
-			if metadata, ok := evt["metadata"]; ok {
+			if metadata := evt.Get("metadata"); metadata != nil {
 				part["metadata"] = metadata
 			}
 			toolParts[toolCallID] = appendPart(part)
 		case agui.EventToolCallArgs:
-			toolCallID, _ := evt["toolCallId"].(string)
+			toolCallID, _ := evt.Get("toolCallId").(string)
 			part := toolParts[toolCallID]
 			if part == nil {
 				part = appendPart(MessagePart{"type": "tool-call", "id": toolCallID, "toolCallId": toolCallID, "arguments": ""})
 				toolParts[toolCallID] = part
 			}
-			part["state"] = firstString(evt["state"])
-			if delta, _ := evt["delta"].(string); delta != "" {
+			part["state"] = firstString(evt.Get("state"))
+			if delta, _ := evt.Get("delta").(string); delta != "" {
 				part["arguments"] = asString(part["arguments"]) + delta
 			}
-			if args, ok := evt["args"]; ok {
+			if args := evt.Get("args"); args != nil {
 				part["input"] = args
 			}
 		case agui.EventToolCallEnd:
-			toolCallID, _ := evt["toolCallId"].(string)
+			toolCallID, _ := evt.Get("toolCallId").(string)
 			part := toolParts[toolCallID]
 			if part == nil {
 				part = appendPart(MessagePart{"type": "tool-call", "id": toolCallID, "toolCallId": toolCallID})
 				toolParts[toolCallID] = part
 			}
-			part["name"] = firstString(part["name"], evt["toolName"], evt["toolCallName"])
-			part["state"] = firstString(evt["state"])
-			if input, ok := evt["input"]; ok {
+			part["name"] = firstString(part["name"], evt.Get("toolName"), evt.Get("toolCallName"))
+			part["state"] = firstString(evt.Get("state"))
+			if input := evt.Get("input"); input != nil {
 				part["input"] = input
 			}
-			if result, ok := evt["result"]; ok {
+			if result := evt.Get("result"); result != nil {
 				part["output"] = jsonValue(result)
 			}
 		case agui.EventToolCallResult:
-			toolCallID, _ := evt["toolCallId"].(string)
+			toolCallID, _ := evt.Get("toolCallId").(string)
 			if toolCallID == "" {
 				continue
 			}
@@ -505,12 +504,12 @@ func (t Run) FinalBeeperUIMessage(textBudget int, includeThinking bool) UIMessag
 				part = appendPart(MessagePart{"type": "tool-call", "id": toolCallID, "toolCallId": toolCallID})
 				toolParts[toolCallID] = part
 			}
-			content := asString(evt["content"])
+			content := asString(evt.Get("content"))
 			if previous, ok := part["output"].(string); ok && previous != "" {
 				content = previous + content
 			}
 			if content != "" {
-				output := toolResultOutput(content, firstString(evt["state"]), evt["error"])
+				output := toolResultOutput(content, firstString(evt.Get("state")), evt.Get("error"))
 				part["output"] = output
 				if result, ok := ParseApprovalToolResult(output); ok {
 					part["approvalResponse"] = result
@@ -522,7 +521,7 @@ func (t Run) FinalBeeperUIMessage(textBudget int, includeThinking bool) UIMessag
 				part["state"] = agui.ToolStateInputComplete
 			}
 		case agui.EventRunFinished:
-			for _, interrupt := range runFinishedInterrupts(evt["outcome"]) {
+			for _, interrupt := range runFinishedInterrupts(evt.Get("outcome")) {
 				if interrupt.Reason != agui.InterruptReasonToolCall || interrupt.ToolCallID == "" {
 					continue
 				}
@@ -549,8 +548,8 @@ func (t Run) FinalBeeperUIMessage(textBudget int, includeThinking bool) UIMessag
 				}
 			}
 		case agui.EventCustom:
-			name, _ := evt["name"].(string)
-			value, _ := evt["value"].(map[string]any)
+			name, _ := evt.Get("name").(string)
+			value, _ := evt.Get("value").(map[string]any)
 			switch name {
 			case "com.beeper.source":
 				part := cloneValueMap(value)
@@ -733,11 +732,10 @@ func isReasoningEventType(eventType string) bool {
 	}
 }
 
-func (t Run) InitialBeeperUIMessage() UIMessage {
+func (t Run) InitialBeeperAIMessage() UIMessage {
 	message := UIMessage{
-		ID:       t.MessageID,
-		Role:     agui.RoleAssistant,
-		Metadata: t.UIMessageMetadata(false).Map(),
+		ID:   t.MessageID,
+		Role: agui.RoleAssistant,
 	}
 	if t.Preview.Text != "" {
 		message.Parts = []MessagePart{{
@@ -749,18 +747,6 @@ func (t Run) InitialBeeperUIMessage() UIMessage {
 		message.Parts = []MessagePart{}
 	}
 	return message
-}
-
-func (t Run) UIMessageMetadata(includeUsage bool) UIMessageMetadata {
-	metadata := UIMessageMetadata{
-		ThreadID: t.ThreadID,
-		RunID:    t.RunID,
-		Status:   t.Status,
-	}
-	if includeUsage {
-		metadata.Usage = &t.Usage
-	}
-	return metadata
 }
 
 func compactTextPart(part MessagePart, budget int) {

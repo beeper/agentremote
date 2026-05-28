@@ -11,14 +11,20 @@ import (
 )
 
 const (
-	BeeperAIKey          = "com.beeper.ai"
-	BeeperAIMetadataKey  = "com.beeper.ai.metadata"
-	BeeperAIStreamKey    = "com.beeper.llm"
-	BeeperAIStreamDeltas = BeeperAIStreamKey + ".deltas"
-	DefaultModel         = "dummybridge/ag-ui"
-	CarrierBudgetBytes   = 40 * 1024
-	PreviewBudgetBytes   = 4096
-	SnapshotTextBytes    = 4096
+	BeeperAIKey         = "com.beeper.ai"
+	BeeperAISchema      = "com.beeper.ai.v1"
+	BeeperAIApprovalKey = "com.beeper.ai.approval"
+	DefaultModel        = "dummybridge/ag-ui"
+	CarrierBudgetBytes  = 40 * 1024
+	PreviewBudgetBytes  = 4096
+	SnapshotTextBytes   = 4096
+)
+
+const (
+	AIKindAnchor  = "anchor"
+	AIKindStream  = "stream"
+	AIKindFinal   = "final"
+	AIKindSegment = "segment"
 )
 
 type Run struct {
@@ -34,6 +40,7 @@ type Run struct {
 	Artifacts  ArtifactSummary
 	Data       map[string]any
 	Status     Status
+	Final      FinalDelivery
 	Usage      agui.Usage
 	Preview    Preview
 	ToolCallID string
@@ -53,41 +60,63 @@ type Preview struct {
 	Truncated bool   `json:"truncated"`
 }
 
-type UIMessageMetadata struct {
-	ThreadID string      `json:"threadId"`
-	RunID    string      `json:"runId"`
-	Status   Status      `json:"status"`
-	Usage    *agui.Usage `json:"usage,omitempty"`
-}
-
-func (m UIMessageMetadata) Map() map[string]any {
-	out := map[string]any{
-		"threadId": m.ThreadID,
-		"runId":    m.RunID,
-		"status":   m.Status,
-	}
-	if m.Usage != nil {
-		out["usage"] = *m.Usage
-	}
-	return out
-}
-
 type RunMetadata struct {
-	Schema     string
-	Protocol   string
-	ThreadID   string
-	RunID      string
-	MessageID  string
-	AgentID    string
-	AgentName  string
-	Model      string
-	Usage      agui.Usage
-	Status     Status
-	Approvals  []ApprovalSummary
-	Interrupts []agui.Interrupt
-	Artifacts  ArtifactSummary
-	Data       map[string]any
-	Preview    Preview
+	Schema       string            `json:"schema"`
+	Protocol     string            `json:"protocol"`
+	ThreadID     string            `json:"threadId"`
+	RunID        string            `json:"runId"`
+	MessageID    string            `json:"messageId"`
+	Agent        AgentMetadata     `json:"agent,omitempty"`
+	Model        string            `json:"model,omitempty"`
+	Usage        agui.Usage        `json:"usage,omitempty"`
+	UsageDetails map[string]any    `json:"usageDetails,omitempty"`
+	Status       Status            `json:"status,omitempty"`
+	Approvals    []ApprovalSummary `json:"approvals,omitempty"`
+	Interrupts   []agui.Interrupt  `json:"interrupts,omitempty"`
+	Artifacts    ArtifactSummary   `json:"artifacts,omitempty"`
+	Data         map[string]any    `json:"data,omitempty"`
+	Preview      Preview           `json:"preview,omitempty"`
+	Terminal     RunTerminal       `json:"terminal,omitempty"`
+	Final        FinalDelivery     `json:"final,omitempty"`
+}
+
+type BeeperAI struct {
+	Schema       string                 `json:"schema"`
+	Protocol     string                 `json:"protocol"`
+	Kind         string                 `json:"kind"`
+	ThreadID     string                 `json:"threadId"`
+	RunID        string                 `json:"runId"`
+	MessageID    string                 `json:"messageId"`
+	Agent        AgentMetadata          `json:"agent,omitempty"`
+	Model        string                 `json:"model,omitempty"`
+	Message      *UIMessage             `json:"message,omitempty"`
+	Events       []Envelope             `json:"events,omitempty"`
+	Usage        agui.Usage             `json:"usage,omitempty"`
+	UsageDetails map[string]any         `json:"usageDetails,omitempty"`
+	Status       Status                 `json:"status,omitempty"`
+	Approvals    []ApprovalSummary      `json:"approvals,omitempty"`
+	Interrupts   []agui.Interrupt       `json:"interrupts,omitempty"`
+	Artifacts    ArtifactSummary        `json:"artifacts,omitempty"`
+	Data         map[string]any         `json:"data,omitempty"`
+	Preview      Preview                `json:"preview,omitempty"`
+	Terminal     *RunTerminal           `json:"terminal,omitempty"`
+	Final        *FinalDelivery         `json:"final,omitempty"`
+	Segment      *FinalSegmentMetadata  `json:"segment,omitempty"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+}
+
+type AgentMetadata struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"displayName"`
+}
+
+type StreamMetadata struct {
+	Schema    string `json:"schema"`
+	Protocol  string `json:"protocol"`
+	ThreadID  string `json:"threadId"`
+	RunID     string `json:"runId"`
+	MessageID string `json:"messageId"`
+	AgentID   string `json:"agentId"`
 }
 
 func (m RunMetadata) Map() map[string]any {
@@ -102,8 +131,8 @@ func (m RunMetadata) Map() map[string]any {
 		"runId":     m.RunID,
 		"messageId": m.MessageID,
 		"agent": map[string]any{
-			"id":          m.AgentID,
-			"displayName": m.AgentName,
+			"id":          m.Agent.ID,
+			"displayName": m.Agent.DisplayName,
 		},
 		"model": m.Model,
 		"usage": map[string]any{
@@ -119,6 +148,71 @@ func (m RunMetadata) Map() map[string]any {
 		"artifacts":    m.Artifacts,
 		"data":         m.Data,
 		"preview":      m.Preview,
+		"terminal":     m.BuildTerminal(),
+		"final":        m.Final,
+	}
+}
+
+func (m RunMetadata) BuildTerminal() RunTerminal {
+	return RunTerminal{
+		State:        m.Status.State,
+		FinishReason: m.Status.FinishReason,
+		Usage:        m.Usage,
+		Outcome:      terminalOutcome(m.Status, m.Interrupts),
+		Error:        terminalError(m.Status.Error),
+	}
+}
+
+type RunTerminal struct {
+	State        string     `json:"state"`
+	FinishReason string     `json:"finishReason,omitempty"`
+	Usage        agui.Usage `json:"usage,omitempty"`
+	Outcome      any        `json:"outcome,omitempty"`
+	Error        *RunError  `json:"error,omitempty"`
+}
+
+type RunError struct {
+	Message string `json:"message"`
+	Code    string `json:"code,omitempty"`
+}
+
+type FinalDelivery struct {
+	Delivery     string `json:"delivery"`
+	SegmentCount int    `json:"segmentCount"`
+}
+
+func terminalOutcome(status Status, interrupts []agui.Interrupt) any {
+	if status.State == "interrupted" {
+		return agui.RunFinishedOutcome{Type: agui.OutcomeInterrupt, Interrupts: interrupts}
+	}
+	if status.State == "complete" {
+		return agui.RunFinishedOutcome{Type: agui.OutcomeSuccess}
+	}
+	return nil
+}
+
+func terminalError(value any) *RunError {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case RunError:
+		return &typed
+	case *RunError:
+		return typed
+	case map[string]any:
+		message, _ := typed["message"].(string)
+		code, _ := typed["code"].(string)
+		if message == "" && code == "" {
+			return nil
+		}
+		return &RunError{Message: message, Code: code}
+	case string:
+		if typed == "" {
+			return nil
+		}
+		return &RunError{Message: typed}
+	default:
+		return &RunError{Message: fmt.Sprint(typed)}
 	}
 }
 
@@ -203,7 +297,7 @@ func NewWriter(run *Run, now func() time.Time) *Writer {
 }
 
 func (w *Writer) Add(evt agui.Event) {
-	if w == nil || w.Run == nil || len(evt) == 0 {
+	if w == nil || w.Run == nil || evt.Len() == 0 {
 		return
 	}
 	w.Run.Events = append(w.Run.Events, evt)
@@ -482,11 +576,6 @@ func (w *Writer) addFinalSnapshot() {
 		return
 	}
 	messages := w.Run.Messages(true)
-	for i := range messages {
-		if messages[i].ID == w.Run.MessageID {
-			messages[i].Metadata = w.Run.UIMessageMetadata(true).Map()
-		}
-	}
 	w.MessagesSnapshot(messages)
 }
 
@@ -636,14 +725,14 @@ func toolResultState(result any) string {
 }
 
 func (w *Writer) applySummary(evt agui.Event) {
-	switch evt["type"] {
+	switch evt.Type() {
 	case agui.EventTextMessageContent, agui.EventTextMessageChunk:
-		if delta, _ := evt["delta"].(string); delta != "" {
+		if delta, _ := evt.Get("delta").(string); delta != "" {
 			w.Run.Preview = PreviewFromText(w.Run.Text(), PreviewBudgetBytes)
 		}
 	case agui.EventCustom:
-		name, _ := evt["name"].(string)
-		value, _ := evt["value"].(map[string]any)
+		name, _ := evt.Get("name").(string)
+		value, _ := evt.Get("value").(map[string]any)
 		switch name {
 		case "com.beeper.source":
 			w.Run.Artifacts.Sources = append(w.Run.Artifacts.Sources, value)

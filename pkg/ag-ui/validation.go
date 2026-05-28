@@ -6,7 +6,7 @@ import (
 )
 
 func ValidateEvent(evt Event) error {
-	eventType, _ := evt["type"].(string)
+	eventType := evt.Type()
 	if eventType == "" {
 		return fmt.Errorf("ag-ui event missing type")
 	}
@@ -20,7 +20,7 @@ func ValidateEvent(evt Event) error {
 		if err := validateFinishReason(evt); err != nil {
 			return err
 		}
-		return validateRunFinishedOutcome(evt["outcome"])
+		return validateRunFinishedOutcome(evt.Get("outcome"))
 	case EventRunError:
 		return require(evt, "message")
 	case EventTextMessageStart:
@@ -33,8 +33,8 @@ func ValidateEvent(evt Event) error {
 	case EventTextMessageEnd:
 		return require(evt, "messageId")
 	case EventTextMessageChunk:
-		if messageID, _ := evt["messageId"].(string); messageID == "" {
-			if delta, _ := evt["delta"].(string); delta == "" {
+		if messageID, _ := evt.Get("messageId").(string); messageID == "" {
+			if delta, _ := evt.Get("delta").(string); delta == "" {
 				return fmt.Errorf("%s requires messageId or delta", eventType)
 			}
 		}
@@ -47,8 +47,8 @@ func ValidateEvent(evt Event) error {
 		}
 		return requireStringField(evt, "delta")
 	case EventReasoningMsgChunk:
-		if messageID, _ := evt["messageId"].(string); messageID == "" {
-			if delta, _ := evt["delta"].(string); delta == "" {
+		if messageID, _ := evt.Get("messageId").(string); messageID == "" {
+			if delta, _ := evt.Get("delta").(string); delta == "" {
 				return fmt.Errorf("%s requires messageId or delta", eventType)
 			}
 		}
@@ -78,13 +78,13 @@ func ValidateEvent(evt Event) error {
 		if err := require(evt, "toolCallId"); err != nil {
 			return err
 		}
-		if _, ok := evt["result"]; ok {
-			return fmt.Errorf("%s must not include result; emit TOOL_CALL_RESULT instead", evt["type"])
+		if evt.Has("result") {
+			return fmt.Errorf("%s must not include result; emit TOOL_CALL_RESULT instead", evt.Type())
 		}
 		return validateStringSet(evt, "state", true, validToolStates)
 	case EventToolCallChunk:
-		if toolCallID, _ := evt["toolCallId"].(string); toolCallID == "" {
-			if delta, _ := evt["delta"].(string); delta == "" {
+		if toolCallID, _ := evt.Get("toolCallId").(string); toolCallID == "" {
+			if delta, _ := evt.Get("delta").(string); delta == "" {
 				return fmt.Errorf("%s requires toolCallId or delta", eventType)
 			}
 		}
@@ -116,8 +116,8 @@ func ValidateEvent(evt Event) error {
 }
 
 func validateFinishReason(evt Event) error {
-	raw, ok := evt["finishReason"]
-	if !ok {
+	raw := evt.Get("finishReason")
+	if !evt.Has("finishReason") {
 		return nil
 	}
 	value, ok := raw.(string)
@@ -236,7 +236,7 @@ func ValidateEventSequence(events []Event) error {
 		if err := ValidateEvent(evt); err != nil {
 			return fmt.Errorf("event %d: %w", i+1, err)
 		}
-		eventType, _ := evt["type"].(string)
+		eventType := evt.Type()
 		if terminal {
 			return fmt.Errorf("event %d: %s after terminal run event", i+1, eventType)
 		}
@@ -382,7 +382,7 @@ var validToolStates = map[string]bool{
 }
 
 func stringField(evt Event, key string) string {
-	value, _ := evt[key].(string)
+	value, _ := evt.Get(key).(string)
 	return value
 }
 
@@ -393,16 +393,16 @@ var validToolResultStates = map[string]bool{
 }
 
 func validateStringSet(evt Event, key string, required bool, allowed map[string]bool) error {
-	value, ok := evt[key]
-	if !ok || value == nil {
+	value := evt.Get(key)
+	if !evt.Has(key) || value == nil {
 		if required {
-			return fmt.Errorf("%s missing %s", evt["type"], key)
+			return fmt.Errorf("%s missing %s", evt.Type(), key)
 		}
 		return nil
 	}
 	stringValue, ok := value.(string)
 	if !ok || !allowed[stringValue] {
-		return fmt.Errorf("%s has invalid %s %q", evt["type"], key, value)
+		return fmt.Errorf("%s has invalid %s %q", evt.Type(), key, value)
 	}
 	return nil
 }

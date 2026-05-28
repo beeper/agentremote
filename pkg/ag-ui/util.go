@@ -36,27 +36,21 @@ func ValidFinishReason(value string) bool {
 func CloneEvent(evt Event) Event {
 	raw, err := json.Marshal(evt)
 	if err != nil {
-		cp := make(Event, len(evt))
-		for k, v := range evt {
-			cp[k] = v
-		}
-		return cp
+		return NewEvent(evt.Map())
 	}
 	var cp Event
 	if err := json.Unmarshal(raw, &cp); err != nil {
-		cp = make(Event, len(evt))
-		for k, v := range evt {
-			cp[k] = v
-		}
+		cp = NewEvent(evt.Map())
 	}
 	return cp
 }
 
 func require(evt Event, keys ...string) error {
 	for _, key := range keys {
-		value, ok := evt[key]
+		value := evt.Get(key)
+		ok := evt.Has(key)
 		if !ok || emptyValue(value) {
-			return fmt.Errorf("%s missing %s", evt["type"], key)
+			return fmt.Errorf("%s missing %s", evt.Type(), key)
 		}
 	}
 	return nil
@@ -66,16 +60,17 @@ func require(evt Event, keys ...string) error {
 // Unlike require, it accepts whitespace-only strings — streaming deltas can
 // legitimately consist only of spaces or newlines between tokens.
 func requireStringField(evt Event, key string) error {
-	value, ok := evt[key]
+	value := evt.Get(key)
+	ok := evt.Has(key)
 	if !ok {
-		return fmt.Errorf("%s missing %s", evt["type"], key)
+		return fmt.Errorf("%s missing %s", evt.Type(), key)
 	}
 	str, ok := value.(string)
 	if !ok {
-		return fmt.Errorf("%s has invalid %s %T", evt["type"], key, value)
+		return fmt.Errorf("%s has invalid %s %T", evt.Type(), key, value)
 	}
 	if str == "" {
-		return fmt.Errorf("%s missing %s", evt["type"], key)
+		return fmt.Errorf("%s missing %s", evt.Type(), key)
 	}
 	return nil
 }

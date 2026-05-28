@@ -45,6 +45,19 @@ type Client struct {
 	activeRuns      map[networkid.PortalKey]*activeAIRun
 }
 
+func aguiFinishReasonFromAI(reason ai.StopReason) string {
+	switch reason {
+	case "", ai.StopReasonStop:
+		return agui.FinishReasonStop
+	case ai.StopReasonLength:
+		return agui.FinishReasonLength
+	case ai.StopReasonToolUse:
+		return agui.FinishReasonToolCalls
+	default:
+		return agui.FinishReasonOther
+	}
+}
+
 type pendingAIMessage struct {
 	msg         *bridgev2.MatrixMessage
 	txnID       networkid.TransactionID
@@ -477,7 +490,7 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 	}
 	if assistantMessage.StopReason != ai.StopReasonError && assistantMessage.StopReason != ai.StopReasonAborted {
 		if last := active.lastAssistant(); last != nil {
-			cl.runAutoCompaction(ctx, streamPublisher, msg.Portal.MXID, last.eventID, agentHarness, agentSession, model, assistantMessage)
+			cl.runAutoCompaction(ctx, agentHarness, agentSession, model, assistantMessage)
 		}
 	}
 	portalMeta.LastRunID = active.lastRunID()
@@ -721,9 +734,9 @@ func (cl *Client) assistantEvent(portalKey networkid.PortalKey, messageID networ
 
 func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, run aistream.Run, message ai.Message, metadata *aiid.MessageMetadata) *simplevent.Message[*aistream.Run] {
 	if message.StopReason == ai.StopReasonError {
-		run.Status = aistream.Status{State: "error", FinishReason: string(message.StopReason), Error: map[string]any{"message": message.ErrorMessage}}
+		run.Status = aistream.Status{State: "error", Error: map[string]any{"message": message.ErrorMessage}}
 	} else if run.Status.State == "streaming" {
-		run.Status = aistream.Status{State: "complete", FinishReason: string(message.StopReason)}
+		run.Status = aistream.Status{State: "complete", FinishReason: aguiFinishReasonFromAI(message.StopReason)}
 	}
 	run.Usage = aguiUsage(message.Usage)
 	if run.Preview.Text == "" {
@@ -745,6 +758,18 @@ func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID ne
 		return converted, nil
 	}
 	return edit
+}
+
+func (cl *Client) queueAssistantFinal(portalKey networkid.PortalKey, messageID networkid.MessageID, targetEventID id.EventID, providerID string, modelID string, runID string, run aistream.Run, message ai.Message, metadata *aiid.MessageMetadata) {
+	if cl == nil || cl.UserLogin == nil {
+		return
+	}
+	if targetEventID != "" {
+		for _, segment := range aibridgev2.FinalSegments(portalKey, aiid.AssistantUserID(), run, targetEventID, time.Now()) {
+			cl.UserLogin.QueueRemoteEvent(segment)
+		}
+	}
+	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEdit(portalKey, messageID, providerID, modelID, runID, run, message, metadata))
 }
 
 func (cl *Client) applyModelProfile(content *event.MessageEventContent, providerID string, modelID string) {
@@ -899,12 +924,12 @@ func publishNewStreamEvents(ctx context.Context, publisher bridgev2.BeeperStream
 	}
 	partial := *run
 	partial.Events = append([]agui.Event(nil), run.Events[cursor.published:]...)
-	carriers, err := aistream.PackRunFromSeq(partial, string(eventID), aistream.CarrierBudgetBytes, cursor.nextSeq)
+	carriers, err := aistream.PackRunFromSeq(partial, aistream.CarrierBudgetBytes, cursor.nextSeq)
 	if err != nil {
 		return err
 	}
 	for _, carrier := range carriers {
-		if err := publisher.Publish(ctx, roomID, eventID, aistream.CarrierContent(carrier.Envelopes)); err != nil {
+		if err := publisher.Publish(ctx, roomID, eventID, aistream.CarrierContent(partial, carrier.Envelopes)); err != nil {
 			return err
 		}
 	}
@@ -1081,9 +1106,9 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
 		if evt.RawEvent == nil || writer.Run == nil || len(writer.Run.Events) == 0 {
 			return
 		}
-		writer.Run.Events[len(writer.Run.Events)-1]["rawEvent"] = evt.RawEvent
+		writer.Run.Events[len(writer.Run.Events)-1].Set("rawEvent", evt.RawEvent)
 		if evt.RawSource != "" {
-			writer.Run.Events[len(writer.Run.Events)-1]["rawSource"] = evt.RawSource
+			writer.Run.Events[len(writer.Run.Events)-1].Set("rawSource", evt.RawSource)
 		}
 	}
 	annotateIfAdded := func(before int) {
@@ -1158,9 +1183,9 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
 	case "done":
 		if evt.Message != nil {
 			usage := aguiUsage(evt.Message.Usage)
-			writer.FinishWithUsage(string(evt.Reason), &usage)
+			writer.FinishWithUsage(aguiFinishReasonFromAI(evt.Reason), &usage)
 		} else {
-			writer.Finish(string(evt.Reason))
+			writer.Finish(aguiFinishReasonFromAI(evt.Reason))
 		}
 		annotateLast()
 	case "error":
@@ -1535,7 +1560,7 @@ func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, provide
 	fillAssistantMetadata(stream.metadata, stream.entryID, providerID, modelID, stream.runID, message)
 	appendToolOutputs(stream.run, stream.tools)
 	go cl.updateAssistantMessageMetadata(context.WithoutCancel(ctx), r.portalKey, stream.messageID, stream.metadata)
-	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEdit(r.portalKey, stream.messageID, providerID, modelID, stream.runID, *stream.run, message, stream.metadata))
+	cl.queueAssistantFinal(r.portalKey, stream.messageID, stream.eventID, providerID, modelID, stream.runID, *stream.run, message, stream.metadata)
 	cl.queueAssistantMediaMessages(r.portalKey, providerID, modelID, stream.runID, message)
 }
 

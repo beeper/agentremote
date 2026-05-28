@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/beeper/ai-bridge/pkg/ag-ui"
 )
@@ -36,6 +37,17 @@ type ReactionEvent struct {
 	Bridge  bool
 }
 
+type ApprovalTimeout struct {
+	After  time.Duration
+	Reason string
+}
+
+type ApprovalQueue struct {
+	active  *ApprovalPrompt
+	pending []ApprovalPrompt
+	timeout ApprovalTimeout
+}
+
 type ApprovalContext struct {
 	ID               string `json:"id"`
 	ThreadID         string `json:"threadId"`
@@ -44,7 +56,7 @@ type ApprovalContext struct {
 	Command          string `json:"command"`
 	ToolCallID       string `json:"toolCallId"`
 	ToolName         string `json:"toolName"`
-	TargetEvent      string `json:"target_event"`
+	TargetEvent      string `json:"targetEvent"`
 	AgentID          string `json:"agentId,omitempty"`
 	AgentName        string `json:"agentName,omitempty"`
 	Model            string `json:"model,omitempty"`
@@ -280,6 +292,16 @@ func DeniedApprovalToolResult(approvalID, reason string) ApprovalToolResult {
 	}
 }
 
+func TimedOutApprovalResponse(approvalID string) ToolApprovalResponse {
+	return ToolApprovalResponse{ID: approvalID, Approved: false, Reason: "timed_out"}
+}
+
+func TimedOutApprovalToolResult(approvalID string) ApprovalToolResult {
+	result := DeniedApprovalToolResult(approvalID, "timed_out")
+	result.Status = "timed_out"
+	return result
+}
+
 func ParseApprovalToolResult(value any) (ApprovalToolResult, bool) {
 	switch typed := value.(type) {
 	case ApprovalToolResult:
@@ -439,6 +461,92 @@ func ApprovalResponseForChoice(approvalID string, choice ApprovalChoice) ToolApp
 	default:
 		return ToolApprovalResponse{ID: approvalID, Approved: false, Reason: "invalid approval choice"}
 	}
+}
+
+func NewApprovalQueue(timeout ApprovalTimeout) *ApprovalQueue {
+	if timeout.Reason == "" {
+		timeout.Reason = "timed_out"
+	}
+	return &ApprovalQueue{timeout: timeout}
+}
+
+func (q *ApprovalQueue) Add(prompt ApprovalPrompt) {
+	if q == nil || prompt.ID == "" {
+		return
+	}
+	if q.active == nil {
+		cp := prompt
+		q.active = &cp
+		return
+	}
+	if q.active.ID == prompt.ID {
+		return
+	}
+	for _, existing := range q.pending {
+		if existing.ID == prompt.ID {
+			return
+		}
+	}
+	q.pending = append(q.pending, prompt)
+}
+
+func (q *ApprovalQueue) AddAll(prompts []ApprovalPrompt) {
+	for _, prompt := range prompts {
+		q.Add(prompt)
+	}
+}
+
+func (q *ApprovalQueue) Active() (ApprovalPrompt, bool) {
+	if q == nil || q.active == nil {
+		return ApprovalPrompt{}, false
+	}
+	return *q.active, true
+}
+
+func (q *ApprovalQueue) Pending() []ApprovalPrompt {
+	if q == nil || len(q.pending) == 0 {
+		return nil
+	}
+	return append([]ApprovalPrompt(nil), q.pending...)
+}
+
+func (q *ApprovalQueue) Timeout() ApprovalTimeout {
+	if q == nil {
+		return ApprovalTimeout{Reason: "timed_out"}
+	}
+	timeout := q.timeout
+	if timeout.Reason == "" {
+		timeout.Reason = "timed_out"
+	}
+	return timeout
+}
+
+func (q *ApprovalQueue) Resolve(approvalID string) (ApprovalPrompt, bool) {
+	if q == nil || q.active == nil || q.active.ID != approvalID {
+		return ApprovalPrompt{}, false
+	}
+	resolved := *q.active
+	if len(q.pending) == 0 {
+		q.active = nil
+		return resolved, true
+	}
+	next := q.pending[0]
+	q.pending = append([]ApprovalPrompt(nil), q.pending[1:]...)
+	q.active = &next
+	return resolved, true
+}
+
+func (q *ApprovalQueue) TimeoutActive() (ApprovalPrompt, ToolApprovalResponse, bool) {
+	active, ok := q.Active()
+	if !ok {
+		return ApprovalPrompt{}, ToolApprovalResponse{}, false
+	}
+	response := TimedOutApprovalResponse(active.ID)
+	if reason := q.Timeout().Reason; reason != "" {
+		response.Reason = reason
+	}
+	q.Resolve(active.ID)
+	return active, response, true
 }
 
 func CleanupApprovalReactions(choices []ApprovalChoice, selectedKey string, events []ReactionEvent, bridgeSender string) ApprovalCleanup {

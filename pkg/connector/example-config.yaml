@@ -26,4 +26,3 @@ search:
   enabled: false
   endpoint: ""
   api_key: ""
-stream_type: com.beeper.llm.deltas

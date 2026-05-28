@@ -8,11 +8,10 @@ const (
 )
 
 type UIMessage struct {
-	ID        string         `json:"id"`
-	Role      string         `json:"role"`
-	Parts     []MessagePart  `json:"parts"`
-	CreatedAt *time.Time     `json:"createdAt,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	ID        string        `json:"id"`
+	Role      string        `json:"role"`
+	Parts     []MessagePart `json:"parts"`
+	CreatedAt *time.Time    `json:"createdAt,omitempty"`
 }
 
 type MessagePart map[string]any

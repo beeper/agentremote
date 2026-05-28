@@ -44,12 +44,26 @@ func Anchor(portalKey networkid.PortalKey, sender networkid.UserID, run aistream
 }
 
 func Carrier(portalKey networkid.PortalKey, sender networkid.UserID, run aistream.Run, carrier aistream.Carrier, targetEventID id.EventID, index int, timestamp time.Time) *simplevent.PreConvertedMessage {
-	content, extra := aimatrix.CarrierContent(carrier, targetEventID)
+	content, extra := aimatrix.CarrierContent(run, carrier, targetEventID)
 	return &simplevent.PreConvertedMessage{
 		EventMeta: eventMeta(bridgev2.RemoteEventMessage, portalKey, sender, timestamp),
 		Data:      &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{messagePart(content, extra, nil)}},
 		ID:        networkid.MessageID(aistream.StreamTxnID(run.RunID, index)),
 	}
+}
+
+func FinalSegments(portalKey networkid.PortalKey, sender networkid.UserID, run aistream.Run, targetEventID id.EventID, timestamp time.Time) []*simplevent.PreConvertedMessage {
+	segments := aimatrix.FinalSegments(run)
+	out := make([]*simplevent.PreConvertedMessage, 0, len(segments))
+	for _, segment := range segments {
+		content, extra := aimatrix.FinalSegmentContent(run, segment, targetEventID)
+		out = append(out, &simplevent.PreConvertedMessage{
+			EventMeta: eventMeta(bridgev2.RemoteEventMessage, portalKey, sender, timestamp),
+			Data:      &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{messagePart(content, extra, nil)}},
+			ID:        networkid.MessageID(aistream.FinalSegmentTxnID(run.RunID, segment.Metadata.Index)),
+		})
+	}
+	return out
 }
 
 func ApprovalPrompt(portalKey networkid.PortalKey, sender networkid.UserID, ctx aistream.ApprovalContext, timestamp time.Time) *simplevent.PreConvertedMessage {
@@ -69,13 +83,6 @@ func ApprovalOptionReaction(portalKey networkid.PortalKey, sender networkid.User
 		TargetMessage: networkid.MessageID(ctx.ID),
 		EmojiID:       networkid.EmojiID(choice.Key),
 		Emoji:         choice.Alias,
-		ExtraContent: map[string]any{
-			"com.beeper.ai.approval_option": map[string]any{
-				"approvalId": ctx.ID,
-				"toolCallId": ctx.ToolCallID,
-				"choice":     choice.Key,
-			},
-		},
 	}
 }
 
@@ -98,7 +105,6 @@ func FinalMetadataEdit(portalKey networkid.PortalKey, sender networkid.UserID, m
 					Extra:   finalExtra,
 					TopLevelExtra: map[string]any{
 						"com.beeper.dont_render_edited": true,
-						"com.beeper.stream":             nil,
 					},
 				}},
 			}, nil

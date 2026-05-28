@@ -21,53 +21,29 @@ func truncateUTF8(s string, maxBytes int) string {
 }
 
 type Envelope struct {
-	ThreadID    string     `json:"threadId"`
-	RunID       string     `json:"runId"`
-	MessageID   string     `json:"messageId"`
-	Seq         int        `json:"seq"`
-	Part        agui.Event `json:"part"`
-	TargetEvent string     `json:"target_event,omitempty"`
-	RelatesTo   Relation   `json:"m.relates_to,omitempty"`
-	AgentID     string     `json:"agent_id,omitempty"`
-}
-
-type Relation struct {
-	Type    string `json:"rel_type"`
-	EventID string `json:"event_id"`
+	Seq   int        `json:"seq"`
+	Event agui.Event `json:"event"`
 }
 
 type Carrier struct {
 	Envelopes []Envelope
 }
 
-func BuildEnvelope(run Run, seq int, part agui.Event, targetEventID string) (Envelope, error) {
+func BuildEnvelope(run Run, seq int, part agui.Event) (Envelope, error) {
 	if seq <= 0 {
 		return Envelope{}, fmt.Errorf("stream envelope: seq must be > 0")
 	}
 	if err := agui.ValidateEvent(part); err != nil {
 		return Envelope{}, err
 	}
-	targetEventID = strings.TrimSpace(targetEventID)
-	if targetEventID == "" {
-		return Envelope{}, fmt.Errorf("stream envelope: missing target event id")
-	}
-	return Envelope{
-		ThreadID:    run.ThreadID,
-		RunID:       run.RunID,
-		MessageID:   run.MessageID,
-		Seq:         seq,
-		Part:        part,
-		TargetEvent: targetEventID,
-		RelatesTo:   Relation{Type: "m.reference", EventID: targetEventID},
-		AgentID:     run.AgentID,
-	}, nil
+	return Envelope{Seq: seq, Event: part}, nil
 }
 
-func PackRun(run Run, targetEventID string, budget int) ([]Carrier, error) {
-	return PackRunFromSeq(run, targetEventID, budget, 1)
+func PackRun(run Run, budget int) ([]Carrier, error) {
+	return PackRunFromSeq(run, budget, 1)
 }
 
-func PackRunFromSeq(run Run, targetEventID string, budget int, startSeq int) ([]Carrier, error) {
+func PackRunFromSeq(run Run, budget int, startSeq int) ([]Carrier, error) {
 	if budget <= 0 {
 		budget = CarrierBudgetBytes
 	}
@@ -79,34 +55,20 @@ func PackRunFromSeq(run Run, targetEventID string, budget int, startSeq int) ([]
 	}
 	var carriers []Carrier
 	var current Carrier
-	currentSize := 0
-	emptyCarrierOverhead := JSONSize(CarrierContent([]Envelope{}))
 	seq := startSeq
 	for _, original := range run.Events {
 		for _, part := range splitEventForBudget(original, budget) {
-			env, err := BuildEnvelope(run, seq, part, targetEventID)
+			env, err := BuildEnvelope(run, seq, part)
 			if err != nil {
 				return nil, err
 			}
-			envSize := JSONSize(env)
-			if emptyCarrierOverhead+envSize > budget {
+			if JSONSize(CarrierContent(run, []Envelope{env})) > budget {
 				return nil, fmt.Errorf("stream envelope %d exceeds %d byte budget", seq, budget)
 			}
-			// +1 for the comma separator between envelopes in the JSON array.
-			addedSize := envSize
-			if len(current.Envelopes) > 0 {
-				addedSize++
-			}
-			if len(current.Envelopes) > 0 && currentSize+addedSize > budget {
+			candidate := Carrier{Envelopes: append(append([]Envelope(nil), current.Envelopes...), env)}
+			if len(current.Envelopes) > 0 && JSONSize(CarrierContent(run, candidate.Envelopes)) > budget {
 				carriers = append(carriers, current)
 				current = Carrier{}
-				currentSize = 0
-				addedSize = envSize
-			}
-			if len(current.Envelopes) == 0 {
-				currentSize = emptyCarrierOverhead + envSize
-			} else {
-				currentSize += addedSize
 			}
 			current.Envelopes = append(current.Envelopes, env)
 			seq++
@@ -130,16 +92,18 @@ func NextSeq(carriers []Carrier) int {
 	return next
 }
 
-func CarrierContent(envelopes []Envelope) map[string]any {
-	return map[string]any{BeeperAIStreamDeltas: envelopes}
+func CarrierContent(run Run, envelopes []Envelope) map[string]any {
+	return map[string]any{
+		BeeperAIKey: run.AIStream(envelopes),
+	}
 }
 
 func ReconstructText(carriers []Carrier) string {
 	var out strings.Builder
 	for _, carrier := range carriers {
 		for _, env := range carrier.Envelopes {
-			if env.Part["type"] == agui.EventTextMessageContent || env.Part["type"] == agui.EventTextMessageChunk {
-				delta, _ := env.Part["delta"].(string)
+			if env.Event.Type() == agui.EventTextMessageContent || env.Event.Type() == agui.EventTextMessageChunk {
+				delta, _ := env.Event.Get("delta").(string)
 				out.WriteString(delta)
 			}
 		}
@@ -148,7 +112,7 @@ func ReconstructText(carriers []Carrier) string {
 }
 
 func splitEventForBudget(evt agui.Event, budget int) []agui.Event {
-	if evt["type"] == agui.EventMessagesSnapshot {
+	if evt.Type() == agui.EventMessagesSnapshot {
 		return splitMessagesSnapshotForBudget(evt, budget)
 	}
 	if JSONSize(evt) <= budget {
@@ -160,14 +124,14 @@ func splitEventForBudget(evt agui.Event, budget int) []agui.Event {
 	if split := splitStringFieldEventForBudget(evt, budget, "content"); len(split) > 0 {
 		return split
 	}
-	if evt["type"] != agui.EventTextMessageContent {
+	if evt.Type() != agui.EventTextMessageContent {
 		return []agui.Event{sanitizeRawEvent(evt, budget)}
 	}
 	return []agui.Event{sanitizeRawEvent(evt, budget)}
 }
 
 func splitStringFieldEventForBudget(evt agui.Event, budget int, field string) []agui.Event {
-	value, _ := evt[field].(string)
+	value, _ := evt.Get(field).(string)
 	if value == "" {
 		return nil
 	}
@@ -178,14 +142,14 @@ func splitStringFieldEventForBudget(evt agui.Event, budget int, field string) []
 	var out []agui.Event
 	for _, chunk := range SplitTextUTF8(value, maxDelta) {
 		cp := agui.CloneEvent(evt)
-		cp[field] = chunk
+		cp.Set(field, chunk)
 		out = append(out, sanitizeRawEvent(cp, budget))
 	}
 	return out
 }
 
 func splitMessagesSnapshotForBudget(evt agui.Event, budget int) []agui.Event {
-	rawMessages, ok := evt["messages"].([]agui.Message)
+	rawMessages, ok := evt.Get("messages").([]agui.Message)
 	if !ok || len(rawMessages) == 0 {
 		return []agui.Event{sanitizeRawEvent(evt, budget)}
 	}
@@ -208,7 +172,7 @@ func splitMessagesSnapshotForBudget(evt agui.Event, budget int) []agui.Event {
 			messages[i].Metadata["contentTruncated"] = true
 		}
 	}
-	cp["messages"] = messages
+	cp.Set("messages", messages)
 	if JSONSize(cp) <= budget {
 		return []agui.Event{sanitizeRawEvent(cp, budget)}
 	}
@@ -221,7 +185,7 @@ func splitMessagesSnapshotForBudget(evt agui.Event, budget int) []agui.Event {
 			messages[i].Metadata["contentTruncated"] = true
 		}
 	}
-	cp["messages"] = messages
+	cp.Set("messages", messages)
 	return []agui.Event{sanitizeRawEvent(cp, budget)}
 }
 
@@ -229,9 +193,9 @@ func sanitizeRawEvent(evt agui.Event, budget int) agui.Event {
 	cp := agui.CloneEvent(evt)
 	rawKey := ""
 	switch {
-	case cp["rawEvent"] != nil:
+	case cp.Get("rawEvent") != nil:
 		rawKey = "rawEvent"
-	case cp["type"] == agui.EventRaw && cp["event"] != nil:
+	case cp.Type() == agui.EventRaw && cp.Get("event") != nil:
 		rawKey = "event"
 	}
 	if rawKey == "" {
@@ -240,17 +204,17 @@ func sanitizeRawEvent(evt agui.Event, budget int) agui.Event {
 	if JSONSize(cp) <= budget {
 		return cp
 	}
-	raw, err := json.Marshal(cp[rawKey])
+	raw, err := json.Marshal(cp.Get(rawKey))
 	if err != nil {
-		delete(cp, rawKey)
-		cp["rawEventTruncated"] = true
+		cp.Delete(rawKey)
+		cp.Set("rawEventTruncated", true)
 	} else if len(raw) > 2048 {
-		cp[rawKey] = truncateUTF8(string(raw), 2048)
-		cp["rawEventTruncated"] = true
+		cp.Set(rawKey, truncateUTF8(string(raw), 2048))
+		cp.Set("rawEventTruncated", true)
 	}
 	if JSONSize(cp) > budget {
-		delete(cp, rawKey)
-		cp["rawEventTruncated"] = true
+		cp.Delete(rawKey)
+		cp.Set("rawEventTruncated", true)
 	}
 	return cp
 }
