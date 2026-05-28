@@ -148,7 +148,7 @@ func TestPackRunUsesDeltaEventsInsteadOfAccumulatedText(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(carriers) != 1 {
-		t.Fatalf("under-budget run should be packed into one carrier, got %d", len(carriers))
+		t.Fatalf("untimed stream packing should produce one carrier, got %d", len(carriers))
 	}
 	var deltas []string
 	for _, carrier := range carriers {
