@@ -77,15 +77,6 @@ func ApprovalPrompt(portalKey networkid.PortalKey, sender networkid.UserID, ctx 
 	}
 }
 
-func ApprovalOptionReaction(portalKey networkid.PortalKey, sender networkid.UserID, ctx aistream.ApprovalContext, choice aistream.ApprovalChoice, timestamp time.Time) *simplevent.Reaction {
-	return &simplevent.Reaction{
-		EventMeta:     eventMeta(bridgev2.RemoteEventReaction, portalKey, sender, timestamp),
-		TargetMessage: networkid.MessageID(ctx.ID),
-		EmojiID:       networkid.EmojiID(choice.Key),
-		Emoji:         choice.Alias,
-	}
-}
-
 func FinalMetadataEdit(portalKey networkid.PortalKey, sender networkid.UserID, messageID networkid.MessageID, run aistream.Run, timestamp time.Time) *simplevent.Message[*aistream.Run] {
 	finalContent, finalExtra := aimatrix.FinalContent(run)
 	return &simplevent.Message[*aistream.Run]{

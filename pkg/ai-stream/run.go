@@ -60,107 +60,30 @@ type Preview struct {
 	Truncated bool   `json:"truncated"`
 }
 
-type RunMetadata struct {
-	Schema       string            `json:"schema"`
-	Protocol     string            `json:"protocol"`
-	ThreadID     string            `json:"threadId"`
-	RunID        string            `json:"runId"`
-	MessageID    string            `json:"messageId"`
-	Agent        AgentMetadata     `json:"agent,omitempty"`
-	Model        string            `json:"model,omitempty"`
-	Usage        agui.Usage        `json:"usage,omitempty"`
-	UsageDetails map[string]any    `json:"usageDetails,omitempty"`
-	Status       Status            `json:"status,omitempty"`
-	Approvals    []ApprovalSummary `json:"approvals,omitempty"`
-	Interrupts   []agui.Interrupt  `json:"interrupts,omitempty"`
-	Artifacts    ArtifactSummary   `json:"artifacts,omitempty"`
-	Data         map[string]any    `json:"data,omitempty"`
-	Preview      Preview           `json:"preview,omitempty"`
-	Terminal     RunTerminal       `json:"terminal,omitempty"`
-	Final        FinalDelivery     `json:"final,omitempty"`
-}
-
 type BeeperAI struct {
-	Schema       string                 `json:"schema"`
-	Protocol     string                 `json:"protocol"`
-	Kind         string                 `json:"kind"`
-	ThreadID     string                 `json:"threadId"`
-	RunID        string                 `json:"runId"`
-	MessageID    string                 `json:"messageId"`
-	Agent        AgentMetadata          `json:"agent,omitempty"`
-	Model        string                 `json:"model,omitempty"`
-	Message      *UIMessage             `json:"message,omitempty"`
-	Events       []Envelope             `json:"events,omitempty"`
-	Usage        agui.Usage             `json:"usage,omitempty"`
-	UsageDetails map[string]any         `json:"usageDetails,omitempty"`
-	Status       Status                 `json:"status,omitempty"`
-	Approvals    []ApprovalSummary      `json:"approvals,omitempty"`
-	Interrupts   []agui.Interrupt       `json:"interrupts,omitempty"`
-	Artifacts    ArtifactSummary        `json:"artifacts,omitempty"`
-	Data         map[string]any         `json:"data,omitempty"`
-	Preview      Preview                `json:"preview,omitempty"`
-	Terminal     *RunTerminal           `json:"terminal,omitempty"`
-	Final        *FinalDelivery         `json:"final,omitempty"`
-	Segment      *FinalSegmentMetadata  `json:"segment,omitempty"`
-	Metadata     map[string]interface{} `json:"metadata,omitempty"`
+	Schema     string                `json:"schema"`
+	Protocol   string                `json:"protocol"`
+	Kind       string                `json:"kind"`
+	ThreadID   string                `json:"threadId"`
+	RunID      string                `json:"runId"`
+	MessageID  string                `json:"messageId"`
+	Agent      AgentMetadata         `json:"agent,omitempty"`
+	Model      string                `json:"model,omitempty"`
+	Message    *UIMessage            `json:"message,omitempty"`
+	Events     []Envelope            `json:"events,omitempty"`
+	Approvals  []ApprovalSummary     `json:"approvals,omitempty"`
+	Interrupts []agui.Interrupt      `json:"interrupts,omitempty"`
+	Artifacts  ArtifactSummary       `json:"artifacts,omitempty"`
+	Data       map[string]any        `json:"data,omitempty"`
+	Preview    Preview               `json:"preview,omitempty"`
+	Terminal   *RunTerminal          `json:"terminal,omitempty"`
+	Final      *FinalDelivery        `json:"final,omitempty"`
+	Segment    *FinalSegmentMetadata `json:"segment,omitempty"`
 }
 
 type AgentMetadata struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"displayName"`
-}
-
-type StreamMetadata struct {
-	Schema    string `json:"schema"`
-	Protocol  string `json:"protocol"`
-	ThreadID  string `json:"threadId"`
-	RunID     string `json:"runId"`
-	MessageID string `json:"messageId"`
-	AgentID   string `json:"agentId"`
-}
-
-func (m RunMetadata) Map() map[string]any {
-	usageDetails := map[string]any{}
-	if m.Usage.ReasoningTokens != 0 {
-		usageDetails["reasoningTokens"] = m.Usage.ReasoningTokens
-	}
-	return map[string]any{
-		"schema":    m.Schema,
-		"protocol":  m.Protocol,
-		"threadId":  m.ThreadID,
-		"runId":     m.RunID,
-		"messageId": m.MessageID,
-		"agent": map[string]any{
-			"id":          m.Agent.ID,
-			"displayName": m.Agent.DisplayName,
-		},
-		"model": m.Model,
-		"usage": map[string]any{
-			"promptTokens":     m.Usage.PromptTokens,
-			"completionTokens": m.Usage.CompletionTokens,
-			"reasoningTokens":  m.Usage.ReasoningTokens,
-			"totalTokens":      m.Usage.TotalTokens,
-		},
-		"usageDetails": usageDetails,
-		"status":       m.Status,
-		"approvals":    m.Approvals,
-		"interrupts":   m.Interrupts,
-		"artifacts":    m.Artifacts,
-		"data":         m.Data,
-		"preview":      m.Preview,
-		"terminal":     m.BuildTerminal(),
-		"final":        m.Final,
-	}
-}
-
-func (m RunMetadata) BuildTerminal() RunTerminal {
-	return RunTerminal{
-		State:        m.Status.State,
-		FinishReason: m.Status.FinishReason,
-		Usage:        m.Usage,
-		Outcome:      terminalOutcome(m.Status, m.Interrupts),
-		Error:        terminalError(m.Status.Error),
-	}
 }
 
 type RunTerminal struct {

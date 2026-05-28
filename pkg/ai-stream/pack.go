@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/beeper/ai-bridge/pkg/ag-ui"
@@ -44,6 +45,14 @@ func PackRun(run Run, budget int) ([]Carrier, error) {
 }
 
 func PackRunFromSeq(run Run, budget int, startSeq int) ([]Carrier, error) {
+	return packRunFromSeq(run, budget, startSeq, 0)
+}
+
+func PackRunByTimeFromSeq(run Run, budget int, startSeq int, maxSpan time.Duration) ([]Carrier, error) {
+	return packRunFromSeq(run, budget, startSeq, maxSpan)
+}
+
+func packRunFromSeq(run Run, budget int, startSeq int, maxSpan time.Duration) ([]Carrier, error) {
 	if budget <= 0 {
 		budget = CarrierBudgetBytes
 	}
@@ -55,6 +64,7 @@ func PackRunFromSeq(run Run, budget int, startSeq int) ([]Carrier, error) {
 	}
 	var carriers []Carrier
 	var current Carrier
+	var currentStart time.Time
 	seq := startSeq
 	for _, original := range run.Events {
 		for _, part := range splitEventForBudget(original, budget) {
@@ -66,9 +76,16 @@ func PackRunFromSeq(run Run, budget int, startSeq int) ([]Carrier, error) {
 				return nil, fmt.Errorf("stream envelope %d exceeds %d byte budget", seq, budget)
 			}
 			candidate := Carrier{Envelopes: append(append([]Envelope(nil), current.Envelopes...), env)}
-			if len(current.Envelopes) > 0 && JSONSize(CarrierContent(run, candidate.Envelopes)) > budget {
+			partTime := EventTimestamp(part)
+			overBudget := JSONSize(CarrierContent(run, candidate.Envelopes)) > budget
+			overSpan := maxSpan > 0 && len(current.Envelopes) > 0 && !currentStart.IsZero() && !partTime.IsZero() && partTime.Sub(currentStart) > maxSpan
+			if len(current.Envelopes) > 0 && (overBudget || overSpan) {
 				carriers = append(carriers, current)
 				current = Carrier{}
+				currentStart = time.Time{}
+			}
+			if currentStart.IsZero() && !partTime.IsZero() {
+				currentStart = partTime
 			}
 			current.Envelopes = append(current.Envelopes, env)
 			seq++
@@ -78,6 +95,60 @@ func PackRunFromSeq(run Run, budget int, startSeq int) ([]Carrier, error) {
 		carriers = append(carriers, current)
 	}
 	return carriers, nil
+}
+
+func EventTimestamp(evt agui.Event) time.Time {
+	if !evt.Has("timestamp") {
+		return time.Time{}
+	}
+	switch value := evt.Get("timestamp").(type) {
+	case int64:
+		return time.UnixMilli(value)
+	case int:
+		return time.UnixMilli(int64(value))
+	case int32:
+		return time.UnixMilli(int64(value))
+	case float64:
+		return time.UnixMilli(int64(value))
+	case json.Number:
+		millis, err := value.Int64()
+		if err != nil {
+			return time.Time{}
+		}
+		return time.UnixMilli(millis)
+	default:
+		return time.Time{}
+	}
+}
+
+func CarrierTimestamp(run Run, carrier Carrier, streamStart time.Time) time.Time {
+	base := runStartTimestamp(run)
+	if base.IsZero() {
+		return time.Time{}
+	}
+	var latest time.Time
+	for _, env := range carrier.Envelopes {
+		eventTime := EventTimestamp(env.Event)
+		if eventTime.IsZero() {
+			continue
+		}
+		if latest.IsZero() || eventTime.After(latest) {
+			latest = eventTime
+		}
+	}
+	if latest.IsZero() {
+		return time.Time{}
+	}
+	return streamStart.Add(latest.Sub(base))
+}
+
+func runStartTimestamp(run Run) time.Time {
+	for _, evt := range run.Events {
+		if ts := EventTimestamp(evt); !ts.IsZero() {
+			return ts
+		}
+	}
+	return time.Time{}
 }
 
 func NextSeq(carriers []Carrier) int {

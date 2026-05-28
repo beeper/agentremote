@@ -566,31 +566,71 @@ func jsonTaggedFieldNames(t *testing.T, value any) map[string]struct{} {
 	return fields
 }
 
-func TestRunMetadataOwnsMatrixPayloadShape(t *testing.T) {
+func TestBeeperAIOwnsMatrixPayloadShape(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "agent-1", "Agent", time.Unix(10, 0))
 	run.MessageID = "msg-run-1"
+	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
 	run.Usage = agui.Usage{PromptTokens: 1, CompletionTokens: 2, ReasoningTokens: 4, TotalTokens: 7}
 	run.Preview = Preview{Text: "hello", Truncated: false}
 
-	metadata := run.Metadata()
+	payload := run.AI(AIKindFinal)
 
-	if metadata["schema"] != BeeperAISchema || metadata["protocol"] != "ag-ui" {
-		t.Fatalf("bad protocol metadata: %#v", metadata)
+	if payload.Schema != BeeperAISchema || payload.Protocol != "ag-ui" || payload.Kind != AIKindFinal {
+		t.Fatalf("bad AI payload protocol: %#v", payload)
 	}
-	if metadata["threadId"] != "thread-1" || metadata["runId"] != "run-1" || metadata["messageId"] != "msg-run-1" {
-		t.Fatalf("bad run identifiers: %#v", metadata)
+	if payload.ThreadID != "thread-1" || payload.RunID != "run-1" || payload.MessageID != "msg-run-1" {
+		t.Fatalf("bad run identifiers: %#v", payload)
 	}
-	agent, ok := metadata["agent"].(map[string]any)
-	if !ok || agent["id"] != "agent-1" || agent["displayName"] != "Agent" {
-		t.Fatalf("bad agent metadata: %#v", metadata["agent"])
+	if payload.Agent.ID != "agent-1" || payload.Agent.DisplayName != "Agent" {
+		t.Fatalf("bad agent metadata: %#v", payload.Agent)
 	}
-	usage, ok := metadata["usage"].(map[string]any)
-	if !ok || usage["promptTokens"] != 1 || usage["completionTokens"] != 2 || usage["reasoningTokens"] != 4 || usage["totalTokens"] != 7 {
-		t.Fatalf("bad usage metadata: %#v", metadata["usage"])
+	if payload.Terminal == nil {
+		t.Fatalf("missing terminal payload: %#v", payload)
 	}
-	usageDetails, ok := metadata["usageDetails"].(map[string]any)
-	if !ok || usageDetails["reasoningTokens"] != 4 {
-		t.Fatalf("usage details should always be present: %#v", metadata)
+	if payload.Terminal.State != "complete" || payload.Terminal.FinishReason != agui.FinishReasonStop {
+		t.Fatalf("bad terminal state: %#v", payload.Terminal)
+	}
+	if payload.Terminal.Usage != run.Usage {
+		t.Fatalf("bad terminal usage: %#v", payload.Terminal.Usage)
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"metadata"`) || strings.Contains(string(encoded), `"status"`) || strings.Contains(string(encoded), `"usageDetails"`) {
+		t.Fatalf("payload includes removed sidecar fields: %s", encoded)
+	}
+}
+
+func TestFinalSegmentsPackMultiplePartsUntilBudget(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "agent-1", "Agent", time.Unix(10, 0))
+	run.MessageID = "msg-run-1"
+	message := UIMessage{
+		ID:   run.MessageID,
+		Role: "assistant",
+		Parts: []MessagePart{
+			{"type": "text", "id": "part-1", "content": strings.Repeat("a", 400)},
+			{"type": "text", "id": "part-2", "content": strings.Repeat("b", 400)},
+			{"type": "text", "id": "part-3", "content": strings.Repeat("c", 400)},
+		},
+	}
+	maxMetadata := FinalSegmentMetadata{RunID: run.RunID, MessageID: run.MessageID, Index: len(message.Parts), Count: len(message.Parts)}
+	budget := finalSegmentPayloadSize(run, message, message.Parts[:2], maxMetadata)
+	if finalSegmentPayloadSize(run, message, message.Parts, maxMetadata) <= budget {
+		t.Fatal("test budget should require more than one segment")
+	}
+
+	segments := packFinalSegments(run, message, message.Parts, budget)
+	assignFinalSegmentMetadata(run, segments)
+
+	if len(segments) != 2 {
+		t.Fatalf("expected two packed segments, got %d: %#v", len(segments), segments)
+	}
+	if len(segments[0].Message.Parts) != 2 || len(segments[1].Message.Parts) != 1 {
+		t.Fatalf("segments were not packed to budget: %#v", segments)
+	}
+	if segments[0].Metadata.Count != 2 || segments[1].Metadata.Count != 2 || segments[1].Metadata.Index != 1 {
+		t.Fatalf("bad segment metadata: %#v %#v", segments[0].Metadata, segments[1].Metadata)
 	}
 }
 

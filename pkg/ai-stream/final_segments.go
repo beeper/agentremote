@@ -27,22 +27,38 @@ func FinalUIMessageContent(run Run, budget int) (UIMessage, []FinalSegment) {
 		return message, nil
 	}
 
-	segments := make([]FinalSegment, 0)
+	parts := make([]MessagePart, 0, len(message.Parts))
 	for _, part := range message.Parts {
-		for _, splitPart := range splitFinalPart(part, budget) {
-			segmentMessage := UIMessage{
-				ID:    message.ID,
-				Role:  message.Role,
-				Parts: []MessagePart{splitPart},
-			}
-			segments = append(segments, FinalSegment{Message: segmentMessage})
+		parts = append(parts, splitFinalPart(part, budget)...)
+	}
+	segments := packFinalSegments(run, message, parts, budget)
+	assignFinalSegmentMetadata(run, segments)
+	return UIMessage{ID: message.ID, Role: message.Role, Parts: []MessagePart{}}, segments
+}
+
+func packFinalSegments(run Run, message UIMessage, parts []MessagePart, budget int) []FinalSegment {
+	if len(parts) == 0 {
+		return []FinalSegment{{Message: UIMessage{ID: message.ID, Role: message.Role, Parts: []MessagePart{}}}}
+	}
+	maxMetadata := FinalSegmentMetadata{RunID: run.RunID, MessageID: run.MessageID, Index: len(parts), Count: len(parts)}
+	segments := make([]FinalSegment, 0)
+	current := make([]MessagePart, 0)
+	for _, part := range parts {
+		candidate := append(append([]MessagePart(nil), current...), part)
+		if len(current) > 0 && finalSegmentPayloadSize(run, message, candidate, maxMetadata) > budget {
+			segments = append(segments, FinalSegment{Message: finalSegmentMessage(message, current)})
+			current = []MessagePart{part}
+			continue
 		}
+		current = candidate
 	}
-	if len(segments) == 0 {
-		segments = append(segments, FinalSegment{
-			Message: UIMessage{ID: message.ID, Role: message.Role, Parts: []MessagePart{}},
-		})
+	if len(current) > 0 {
+		segments = append(segments, FinalSegment{Message: finalSegmentMessage(message, current)})
 	}
+	return segments
+}
+
+func assignFinalSegmentMetadata(run Run, segments []FinalSegment) {
 	for index := range segments {
 		segments[index].Metadata = FinalSegmentMetadata{
 			RunID:     run.RunID,
@@ -51,16 +67,19 @@ func FinalUIMessageContent(run Run, budget int) (UIMessage, []FinalSegment) {
 			Count:     len(segments),
 		}
 	}
-	return UIMessage{ID: message.ID, Role: message.Role, Parts: []MessagePart{}}, segments
 }
 
-func FinalRunMetadata(run Run, segmentCount int) map[string]any {
-	if segmentCount > 0 {
-		run.Final = FinalDelivery{Delivery: "segmented", SegmentCount: segmentCount}
-	} else {
-		run.Final = FinalDelivery{Delivery: "inline", SegmentCount: 0}
+func finalSegmentPayloadSize(run Run, message UIMessage, parts []MessagePart, metadata FinalSegmentMetadata) int {
+	segmentMessage := finalSegmentMessage(message, parts)
+	return JSONSize(map[string]any{BeeperAIKey: run.AISegment(segmentMessage, metadata)})
+}
+
+func finalSegmentMessage(message UIMessage, parts []MessagePart) UIMessage {
+	return UIMessage{
+		ID:    message.ID,
+		Role:  message.Role,
+		Parts: append([]MessagePart(nil), parts...),
 	}
-	return run.Metadata()
 }
 
 func FinalSegmentTxnID(runID string, index int) string {
