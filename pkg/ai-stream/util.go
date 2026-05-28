@@ -3,6 +3,7 @@ package aistream
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"unicode/utf8"
 )
@@ -84,7 +85,7 @@ func SplitTextUTF8(text string, maxBytes int) []string {
 func JSONSize(value any) int {
 	raw, err := json.Marshal(value)
 	if err != nil {
-		return CarrierBudgetBytes + 1
+		return math.MaxInt
 	}
 	return len(raw)
 }

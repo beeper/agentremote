@@ -924,7 +924,7 @@ func publishNewStreamEvents(ctx context.Context, publisher bridgev2.BeeperStream
 	}
 	partial := *run
 	partial.Events = append([]agui.Event(nil), run.Events[cursor.published:]...)
-	carriers, err := aistream.PackRunFromSeq(partial, aistream.CarrierBudgetBytes, cursor.nextSeq)
+	carriers, err := aistream.PackRunFromSeq(partial, cursor.nextSeq)
 	if err != nil {
 		return err
 	}

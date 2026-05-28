@@ -10,24 +10,19 @@ import (
 	"github.com/beeper/ai-bridge/pkg/ag-ui"
 )
 
-func TestPackRunSplitsOver64KBAndReconstructs(t *testing.T) {
+func TestPackRunDoesNotSplitOrTruncateBySize(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.Start()
 	writer.Text(strings.Repeat("a", 70*1024))
 	writer.Finish(agui.FinishReasonStop)
 
-	carriers, err := PackRun(*run, CarrierBudgetBytes)
+	carriers, err := PackRun(*run)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(carriers) < 2 {
-		t.Fatalf("expected multiple carriers for over-64KB output, got %d", len(carriers))
-	}
-	for i, carrier := range carriers {
-		if size := JSONSize(CarrierContent(*run, carrier.Envelopes)); size > CarrierBudgetBytes {
-			t.Fatalf("carrier %d is %d bytes, budget %d", i, size, CarrierBudgetBytes)
-		}
+	if len(carriers) != 1 {
+		t.Fatalf("stream packing should not split by size, got %d carriers", len(carriers))
 	}
 	if got := ReconstructText(carriers); got != strings.Repeat("a", 70*1024) {
 		t.Fatalf("reconstructed text length = %d", len(got))
@@ -41,7 +36,7 @@ func TestPackRunDoesNotPutFinalizationTotalsOnStreamEnvelopes(t *testing.T) {
 	writer.Text("hello")
 	writer.Finish(agui.FinishReasonStop)
 
-	carriers, err := PackRun(*run, CarrierBudgetBytes)
+	carriers, err := PackRun(*run)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +49,35 @@ func TestPackRunDoesNotPutFinalizationTotalsOnStreamEnvelopes(t *testing.T) {
 	}
 }
 
-func TestFinalSnapshotUsesCanonicalMessagesAndCompactsLargeContent(t *testing.T) {
+func TestPackRunByTimeFromSeqSplitsOnlyByCadence(t *testing.T) {
+	now := time.Unix(10, 0)
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", now)
+	writer := NewWriter(run, func() time.Time { return now })
+	writer.Start()
+	now = now.Add(250 * time.Millisecond)
+	writer.Text("a")
+	now = now.Add(250 * time.Millisecond)
+	writer.Text("b")
+	now = now.Add(2 * time.Second)
+	writer.Text("c")
+	writer.Finish(agui.FinishReasonStop)
+
+	carriers, err := PackRunByTimeFromSeq(*run, 7, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(carriers) != 2 {
+		t.Fatalf("expected cadence split only, got %d carriers", len(carriers))
+	}
+	if carriers[0].Envelopes[0].Seq != 7 || carriers[1].Envelopes[0].Seq != 11 {
+		t.Fatalf("bad sequence continuity: %#v", carriers)
+	}
+	if got := ReconstructText(carriers); got != "abc" {
+		t.Fatalf("bad reconstructed text %q", got)
+	}
+}
+
+func TestStreamSnapshotUsesCanonicalMessagesWithoutSizeCompaction(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
 	writer.Start()
@@ -65,7 +88,7 @@ func TestFinalSnapshotUsesCanonicalMessagesAndCompactsLargeContent(t *testing.T)
 	writer.ToolEnd("tool-1", "fetch", `{"url":"https://example.com"}`, map[string]any{"ok": true})
 	writer.Finish(agui.FinishReasonStop)
 
-	carriers, err := PackRun(*run, CarrierBudgetBytes)
+	carriers, err := PackRun(*run)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,35 +96,28 @@ func TestFinalSnapshotUsesCanonicalMessagesAndCompactsLargeContent(t *testing.T)
 	var sawAssistant bool
 	var sawReasoning bool
 	var sawToolResult bool
-	for i, carrier := range carriers {
-		if size := JSONSize(CarrierContent(*run, carrier.Envelopes)); size > CarrierBudgetBytes {
-			t.Fatalf("carrier %d is %d bytes, budget %d", i, size, CarrierBudgetBytes)
-		}
+	for _, carrier := range carriers {
 		for _, env := range carrier.Envelopes {
 			switch env.Event.Type() {
 			case agui.EventMessagesSnapshot:
 				snapshots++
-				messages, ok := env.Event.Get("messages").([]any)
+				messages, ok := env.Event.Get("messages").([]agui.Message)
 				if !ok || len(messages) == 0 {
 					t.Fatalf("bad final snapshot: %#v", env.Event.Get("messages"))
 				}
-				for _, rawMessage := range messages {
-					message, ok := rawMessage.(map[string]any)
-					if !ok {
-						t.Fatalf("bad final snapshot message: %#v", rawMessage)
-					}
-					switch message["role"] {
+				for _, message := range messages {
+					switch message.Role {
 					case agui.RoleAssistant:
 						sawAssistant = true
-						metadata, ok := message["metadata"].(map[string]any)
-						if !ok || metadata["contentTruncated"] != true {
-							t.Fatalf("large assistant snapshot should be compacted: %#v", message)
+						content, _ := message.Content.(string)
+						if len(content) != 70*1024 {
+							t.Fatalf("stream snapshot assistant content was compacted: %d bytes", len(content))
 						}
 					case "reasoning":
 						sawReasoning = true
-						metadata, _ := message["metadata"].(map[string]any)
-						if metadata["contentTruncated"] != true {
-							t.Fatalf("large reasoning snapshot should be compacted: %#v", message)
+						content, _ := message.Content.(string)
+						if len(content) != 12*1024 {
+							t.Fatalf("stream snapshot reasoning content was compacted: %d bytes", len(content))
 						}
 					case agui.RoleTool:
 						sawToolResult = true
@@ -111,7 +127,7 @@ func TestFinalSnapshotUsesCanonicalMessagesAndCompactsLargeContent(t *testing.T)
 		}
 	}
 	if snapshots != 1 || !sawAssistant || !sawReasoning || !sawToolResult {
-		t.Fatalf("expected canonical compact snapshot with assistant/reasoning/tool messages, snapshots=%d assistant=%v reasoning=%v tool=%v", snapshots, sawAssistant, sawReasoning, sawToolResult)
+		t.Fatalf("expected canonical snapshot with assistant/reasoning/tool messages, snapshots=%d assistant=%v reasoning=%v tool=%v", snapshots, sawAssistant, sawReasoning, sawToolResult)
 	}
 }
 
@@ -127,7 +143,7 @@ func TestPackRunUsesDeltaEventsInsteadOfAccumulatedText(t *testing.T) {
 	writer.Text("def")
 	writer.Finish(agui.FinishReasonStop)
 
-	carriers, err := PackRun(*run, CarrierBudgetBytes)
+	carriers, err := PackRun(*run)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,56 +238,68 @@ func TestInterleavedReasoningContentStaysSeparateInFinalProjections(t *testing.T
 	}
 }
 
-func TestRawEventIsTruncatedBeforePacking(t *testing.T) {
+func TestPackRunPreservesLargeOpaqueStreamEvents(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
 	run.Events = append(run.Events, builder.Custom("com.beeper.debug", map[string]any{"ok": true}))
-	run.Events[0].Set("rawEvent", strings.Repeat("x", CarrierBudgetBytes))
+	run.Events[0].Set("rawEvent", strings.Repeat("x", FinalMessageBudgetBytes))
 
-	carriers, err := PackRun(*run, CarrierBudgetBytes)
+	carriers, err := PackRun(*run)
 	if err != nil {
 		t.Fatal(err)
 	}
 	part := carriers[0].Envelopes[0].Event
-	if part.Get("rawEventTruncated") != true {
-		t.Fatalf("expected rawEventTruncated marker, got %#v", part)
+	if part.Get("rawEventTruncated") != nil {
+		t.Fatalf("stream packing must not truncate rawEvent: %#v", part)
 	}
-	if size := JSONSize(CarrierContent(*run, carriers[0].Envelopes)); size > CarrierBudgetBytes {
-		t.Fatalf("carrier size = %d, budget %d", size, CarrierBudgetBytes)
+	if got, _ := part.Get("rawEvent").(string); len(got) != FinalMessageBudgetBytes {
+		t.Fatalf("rawEvent length = %d", len(got))
 	}
 }
 
-func TestRawAGUIEventIsTruncatedBeforePacking(t *testing.T) {
+func TestPackRunPreservesLargeRawAGUIEvent(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
 	run.Events = append(run.Events, builder.Raw(map[string]any{
 		"type": "response.large",
-		"data": strings.Repeat("x", CarrierBudgetBytes),
+		"data": strings.Repeat("x", FinalMessageBudgetBytes),
 	}, "openai"))
 
-	carriers, err := PackRun(*run, CarrierBudgetBytes)
+	carriers, err := PackRun(*run)
 	if err != nil {
 		t.Fatal(err)
 	}
 	part := carriers[0].Envelopes[0].Event
-	if part.Get("rawEventTruncated") != true {
-		t.Fatalf("expected raw event truncation marker, got %#v", part)
+	if part.Get("rawEventTruncated") != nil {
+		t.Fatalf("stream packing must not truncate raw AG-UI event: %#v", part)
 	}
-	if size := JSONSize(CarrierContent(*run, carriers[0].Envelopes)); size > CarrierBudgetBytes {
-		t.Fatalf("carrier size = %d, budget %d", size, CarrierBudgetBytes)
+	raw, ok := part.Get("event").(map[string]any)
+	if !ok {
+		t.Fatalf("missing raw event payload: %#v", part)
+	}
+	if got, _ := raw["data"].(string); len(got) != FinalMessageBudgetBytes {
+		t.Fatalf("raw event data length = %d", len(got))
 	}
 }
 
-func TestPackRunRejectsOversizedNonTextEvent(t *testing.T) {
+func TestPackRunPreservesLargeCustomEvent(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
 	run.Events = append(run.Events, builder.Custom("com.beeper.large", map[string]any{
-		"value": strings.Repeat("x", CarrierBudgetBytes),
+		"value": strings.Repeat("x", FinalMessageBudgetBytes),
 	}))
 
-	_, err := PackRun(*run, CarrierBudgetBytes)
-	if err == nil {
-		t.Fatal("expected oversized non-text event to fail packing")
+	carriers, err := PackRun(*run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := carriers[0].Envelopes[0].Event
+	value, ok := part.Get("value").(map[string]any)
+	if !ok {
+		t.Fatalf("missing custom value: %#v", part)
+	}
+	if got, _ := value["value"].(string); len(got) != FinalMessageBudgetBytes {
+		t.Fatalf("custom value length = %d", len(got))
 	}
 }
 
@@ -615,13 +643,13 @@ func TestFinalSegmentsPackMultiplePartsUntilBudget(t *testing.T) {
 		},
 	}
 	maxMetadata := FinalSegmentMetadata{RunID: run.RunID, MessageID: run.MessageID, Index: len(message.Parts), Count: len(message.Parts)}
-	budget := finalSegmentPayloadSize(run, message, message.Parts[:2], maxMetadata)
-	if finalSegmentPayloadSize(run, message, message.Parts, maxMetadata) <= budget {
+	budget := finalSegmentPayloadSize(*run, message, message.Parts[:2], maxMetadata)
+	if finalSegmentPayloadSize(*run, message, message.Parts, maxMetadata) <= budget {
 		t.Fatal("test budget should require more than one segment")
 	}
 
-	segments := packFinalSegments(run, message, message.Parts, budget)
-	assignFinalSegmentMetadata(run, segments)
+	segments := packFinalSegments(*run, message, message.Parts, budget)
+	assignFinalSegmentMetadata(*run, segments)
 
 	if len(segments) != 2 {
 		t.Fatalf("expected two packed segments, got %d: %#v", len(segments), segments)

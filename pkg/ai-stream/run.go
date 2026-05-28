@@ -15,9 +15,7 @@ const (
 	BeeperAISchema      = "com.beeper.ai.v1"
 	BeeperAIApprovalKey = "com.beeper.ai.approval"
 	DefaultModel        = "dummybridge/ag-ui"
-	CarrierBudgetBytes  = 40 * 1024
 	PreviewBudgetBytes  = 4096
-	SnapshotTextBytes   = 4096
 )
 
 const (
