@@ -322,9 +322,12 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 	thinkingParts := map[string]*projectedPart{}
 	toolParts := map[string]MessagePart{}
 	currentTextMessageID := ""
+	openTextMessageID := ""
+	openTextPartID := ""
 	currentReasoningMessageID := ""
 	openThinkingMessageID := ""
 	openThinkingPartID := ""
+	textSegmentCounts := map[string]int{}
 	thinkingSegmentCounts := map[string]int{}
 	appendPart := func(part MessagePart) MessagePart {
 		message.Parts = append(message.Parts, part)
@@ -332,15 +335,44 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 	}
 	ensureTextPart := func(messageID string) *projectedPart {
 		if messageID == "" {
+			messageID = currentTextMessageID
+		}
+		if messageID == "" {
 			messageID = t.MessageID
 		}
-		if part := textParts[messageID]; part != nil {
+		currentTextMessageID = messageID
+		if openTextMessageID != messageID || openTextPartID == "" {
+			index := textSegmentCounts[messageID]
+			textSegmentCounts[messageID] = index + 1
+			openTextMessageID = messageID
+			openTextPartID = messageID
+			if index > 0 {
+				openTextPartID = fmt.Sprintf("%s-segment-%d", messageID, index+1)
+			}
+		}
+		if part := textParts[openTextPartID]; part != nil {
 			return part
 		}
-		part := appendPart(MessagePart{"type": "text", "id": messageID, "messageId": messageID, "content": "", "state": agui.PartStateStreaming})
+		part := appendPart(MessagePart{"type": "text", "id": openTextPartID, "messageId": messageID, "content": "", "state": agui.PartStateStreaming})
 		projected := &projectedPart{part: part}
-		textParts[messageID] = projected
+		textParts[openTextPartID] = projected
 		return projected
+	}
+	closeTextPart := func(messageID string) {
+		if messageID == "" {
+			messageID = currentTextMessageID
+		}
+		if messageID == "" {
+			messageID = openTextMessageID
+		}
+		if messageID != "" && openTextMessageID != messageID {
+			return
+		}
+		if part := textParts[openTextPartID]; part != nil {
+			part.part["state"] = agui.PartStateDone
+		}
+		openTextMessageID = ""
+		openTextPartID = ""
 	}
 	ensureThinkingPart := func(messageID string) *projectedPart {
 		if messageID == "" {
@@ -388,6 +420,9 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 		if !isReasoningEventType(eventType) {
 			closeThinkingPart("")
 		}
+		if isActivityEventType(eventType) {
+			closeTextPart("")
+		}
 		switch eventType {
 		case agui.EventTextMessageStart:
 			messageID, _ := evt.Get("messageId").(string)
@@ -413,9 +448,7 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 			}
 		case agui.EventTextMessageEnd:
 			messageID, _ := evt.Get("messageId").(string)
-			if part := textParts[messageID]; part != nil {
-				part.part["state"] = agui.PartStateDone
-			}
+			closeTextPart(messageID)
 		case agui.EventReasoningMsgStart:
 			if !includeThinking {
 				continue
@@ -575,6 +608,7 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 		}
 	}
 	if t.Status.State != "" && t.Status.State != "streaming" {
+		closeTextPart("")
 		closeThinkingPart("")
 	}
 	if t.Status.State != "" && t.Status.State != "streaming" {
@@ -589,21 +623,6 @@ func (t Run) FinalBeeperAIMessage(textBudget int, includeThinking bool) UIMessag
 	for _, projected := range thinkingParts {
 		projected.part["content"] = projected.content.String()
 		compactTextPart(projected.part, textBudget)
-	}
-	if len(message.Parts) > 1 {
-		visible := make([]MessagePart, 0, len(message.Parts))
-		other := make([]MessagePart, 0, len(message.Parts))
-		for _, part := range message.Parts {
-			switch part["type"] {
-			case "text", "thinking":
-				visible = append(visible, part)
-			default:
-				other = append(other, part)
-			}
-		}
-		if len(visible) > 0 {
-			message.Parts = append(visible, other...)
-		}
 	}
 	return message
 }
@@ -726,6 +745,22 @@ func isReasoningEventType(eventType string) bool {
 		agui.EventReasoningMsgEnd,
 		agui.EventReasoningMsgChunk,
 		agui.EventReasoningEncrypted:
+		return true
+	default:
+		return false
+	}
+}
+
+func isActivityEventType(eventType string) bool {
+	if isReasoningEventType(eventType) {
+		return true
+	}
+	switch eventType {
+	case agui.EventToolCallStart,
+		agui.EventToolCallArgs,
+		agui.EventToolCallEnd,
+		agui.EventToolCallChunk,
+		agui.EventToolCallResult:
 		return true
 	default:
 		return false

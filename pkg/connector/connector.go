@@ -31,8 +31,9 @@ var _ bridgev2.ConfigValidatingNetwork = (*Connector)(nil)
 
 func (c *Connector) GetName() bridgev2.BridgeName {
 	return bridgev2.BridgeName{
-		DisplayName:          "AI",
-		NetworkURL:           "https://beeper.com",
+		DisplayName:          "AI Chats",
+		NetworkURL:           "https://www.beeper.com/ai",
+		NetworkIcon:          "mxc://beeper.com/51a668657dd9e0132cc823ad9402c6c2d0fc3321",
 		NetworkID:            aiid.NetworkID,
 		BeeperBridgeType:     aiid.BeeperBridgeType,
 		DefaultPort:          29344,

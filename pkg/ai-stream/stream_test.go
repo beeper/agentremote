@@ -2,6 +2,7 @@ package aistream
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -235,6 +236,47 @@ func TestInterleavedReasoningContentStaysSeparateInFinalProjections(t *testing.T
 	}
 	if strings.Join(thinkingParts, "|") != "checked calendar|checked issues" {
 		t.Fatalf("interleaved thinking parts were not preserved individually: %#v", uiMessage.Parts)
+	}
+}
+
+func TestFinalBeeperAIMessagePreservesInterleavedTextAndToolOrder(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	builder := agui.NewEventBuilder(DefaultModel, func() time.Time { return time.Unix(10, 0) })
+	run.Status = Status{State: "complete", FinishReason: agui.FinishReasonStop}
+	run.Events = append(run.Events,
+		builder.RunStarted("thread-1", "run-1"),
+		builder.TextMessageContent(run.MessageID, "first text"),
+		builder.ToolCallStart(run.MessageID, "tool-1", "fetch", nil),
+		builder.ToolCallEnd("tool-1", "fetch", map[string]any{"query": "events"}, agui.ToolStateInputComplete),
+		builder.ToolCallResult("tool-tool-1", "tool-1", `{"ok":true}`, agui.ToolResultStateComplete, agui.RoleTool),
+		builder.TextMessageContent(run.MessageID, "second text"),
+		builder.ReasoningMessageContent(run.MessageID+"-reasoning", "checked another thing"),
+		builder.TextMessageContent(run.MessageID, "third text"),
+		builder.RunFinished("thread-1", "run-1", agui.FinishReasonStop, agui.Usage{}),
+	)
+	if err := run.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	uiMessage := run.FinalBeeperAIMessage(0, true)
+	got := make([]string, 0, len(uiMessage.Parts))
+	for _, part := range uiMessage.Parts {
+		switch part["type"] {
+		case "text", "thinking":
+			got = append(got, fmt.Sprintf("%s:%s", part["type"], part["content"]))
+		case "tool-call":
+			got = append(got, fmt.Sprintf("tool-call:%s", part["toolCallId"]))
+		}
+	}
+	want := []string{
+		"text:first text",
+		"tool-call:tool-1",
+		"text:second text",
+		"thinking:checked another thing",
+		"text:third text",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("final UIMessage order mismatch\ngot:  %#v\nwant: %#v\nparts: %#v", got, want, uiMessage.Parts)
 	}
 }
 
