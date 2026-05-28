@@ -138,7 +138,7 @@ func ReconstructText(carriers []Carrier) string {
 	var out strings.Builder
 	for _, carrier := range carriers {
 		for _, env := range carrier.Envelopes {
-			if env.Part["type"] == agui.EventTextMessageContent {
+			if env.Part["type"] == agui.EventTextMessageContent || env.Part["type"] == agui.EventTextMessageChunk {
 				delta, _ := env.Part["delta"].(string)
 				out.WriteString(delta)
 			}
@@ -154,155 +154,75 @@ func splitEventForBudget(evt agui.Event, budget int) []agui.Event {
 	if JSONSize(evt) <= budget {
 		return []agui.Event{sanitizeRawEvent(evt, budget)}
 	}
+	if split := splitStringFieldEventForBudget(evt, budget, "delta"); len(split) > 0 {
+		return split
+	}
+	if split := splitStringFieldEventForBudget(evt, budget, "content"); len(split) > 0 {
+		return split
+	}
 	if evt["type"] != agui.EventTextMessageContent {
 		return []agui.Event{sanitizeRawEvent(evt, budget)}
 	}
-	delta, _ := evt["delta"].(string)
-	if delta == "" {
-		return []agui.Event{sanitizeRawEvent(evt, budget)}
+	return []agui.Event{sanitizeRawEvent(evt, budget)}
+}
+
+func splitStringFieldEventForBudget(evt agui.Event, budget int, field string) []agui.Event {
+	value, _ := evt[field].(string)
+	if value == "" {
+		return nil
 	}
 	maxDelta := budget / 2
 	if maxDelta < 1024 {
 		maxDelta = 1024
 	}
 	var out []agui.Event
-	for _, chunk := range SplitTextUTF8(delta, maxDelta) {
+	for _, chunk := range SplitTextUTF8(value, maxDelta) {
 		cp := agui.CloneEvent(evt)
-		cp["delta"] = chunk
+		cp[field] = chunk
 		out = append(out, sanitizeRawEvent(cp, budget))
 	}
 	return out
 }
 
 func splitMessagesSnapshotForBudget(evt agui.Event, budget int) []agui.Event {
-	rawMessages, ok := evt["messages"].([]agui.UIMessage)
+	rawMessages, ok := evt["messages"].([]agui.Message)
 	if !ok || len(rawMessages) == 0 {
 		return []agui.Event{sanitizeRawEvent(evt, budget)}
 	}
-	var out []agui.Event
-	for _, message := range rawMessages {
-		out = append(out, splitFinalMessageSnapshot(evt, message, budget)...)
-	}
-	if len(out) == 0 {
+	if JSONSize(evt) <= budget {
 		return []agui.Event{sanitizeRawEvent(evt, budget)}
 	}
-	return out
-}
-
-func splitFinalMessageSnapshot(evt agui.Event, message agui.UIMessage, budget int) []agui.Event {
-	base := agui.CloneEvent(evt)
-	baseMessage := message
-	baseMessage.Parts = nil
-	base["messages"] = []agui.UIMessage{baseMessage}
-
-	var out []agui.Event
-	baseFlushed := false
-	flushBase := func() {
-		if baseFlushed {
-			return
+	cp := agui.CloneEvent(evt)
+	messages := append([]agui.Message{}, rawMessages...)
+	for i := range messages {
+		content, _ := messages[i].Content.(string)
+		if content == "" {
+			continue
 		}
-		out = append(out, sanitizeRawEvent(base, budget))
-		baseFlushed = true
+		preview := BoundedPreview(content, SnapshotTextBytes)
+		messages[i].Content = preview
+		if messages[i].Metadata == nil {
+			messages[i].Metadata = map[string]any{}
+		}
+		if len(preview) < len(content) {
+			messages[i].Metadata["contentTruncated"] = true
+		}
 	}
-	appendToBase := func(part agui.MessagePart) bool {
-		if baseFlushed {
-			return false
-		}
-		nextMessage := baseMessage
-		nextMessage.Parts = append(append([]agui.MessagePart{}, baseMessage.Parts...), part)
-		candidate := agui.CloneEvent(base)
-		candidate["messages"] = []agui.UIMessage{nextMessage}
-		if JSONSize(candidate) > budget {
-			return false
-		}
-		baseMessage = nextMessage
-		base["messages"] = []agui.UIMessage{baseMessage}
-		return true
+	cp["messages"] = messages
+	if JSONSize(cp) <= budget {
+		return []agui.Event{sanitizeRawEvent(cp, budget)}
 	}
-
-	var continuationParts []agui.MessagePart
-	continuationOffset := 0
-	flushContinuation := func() {
-		if len(continuationParts) == 0 {
-			return
-		}
-		out = append(out, finalPartsEvent(evt, message.ID, message.Metadata, continuationOffset, continuationParts))
-		continuationParts = nil
-	}
-	addContinuation := func(partOffset int, part agui.MessagePart) {
-		if len(continuationParts) > 0 && partOffset != continuationOffset+len(continuationParts) {
-			flushContinuation()
-		}
-		if len(continuationParts) == 0 {
-			continuationOffset = partOffset
-		}
-		candidateParts := append(append([]agui.MessagePart{}, continuationParts...), part)
-		candidate := finalPartsEvent(evt, message.ID, message.Metadata, continuationOffset, candidateParts)
-		if len(continuationParts) > 0 && JSONSize(candidate) > budget {
-			flushContinuation()
-			continuationOffset = partOffset
-		}
-		continuationParts = append(continuationParts, part)
-	}
-
-	for partOffset, part := range message.Parts {
-		for pieceIndex, piece := range splitFinalPartForBudget(part, budget) {
-			if pieceIndex == 0 && appendToBase(piece) {
-				continue
+	for i := range messages {
+		if _, ok := messages[i].Content.(string); ok {
+			messages[i].Content = ""
+			if messages[i].Metadata == nil {
+				messages[i].Metadata = map[string]any{}
 			}
-			flushBase()
-			addContinuation(partOffset, piece)
+			messages[i].Metadata["contentTruncated"] = true
 		}
 	}
-	flushBase()
-	flushContinuation()
-	return out
-}
-
-func finalPartsEvent(base agui.Event, messageID string, metadata map[string]any, partOffset int, parts []agui.MessagePart) agui.Event {
-	evt := agui.CloneEvent(base)
-	evt["type"] = agui.EventCustom
-	evt["name"] = FinalPartsCustomName
-	delete(evt, "messages")
-	runID, _ := metadata["runId"].(string)
-	evt["value"] = map[string]any{
-		"messageId":  messageID,
-		"runId":      runID,
-		"partOffset": partOffset,
-		"parts":      append([]agui.MessagePart{}, parts...),
-	}
-	return evt
-}
-
-func splitFinalPartForBudget(part agui.MessagePart, budget int) []agui.MessagePart {
-	partType, _ := part["type"].(string)
-	if partType != "text" && partType != "thinking" {
-		return []agui.MessagePart{part}
-	}
-	content, _ := part["content"].(string)
-	if content == "" || JSONSize(part) <= budget/2 {
-		return []agui.MessagePart{part}
-	}
-	maxContent := budget / 3
-	if maxContent < 1024 {
-		maxContent = 1024
-	}
-	chunks := SplitTextUTF8(content, maxContent)
-	out := make([]agui.MessagePart, 0, len(chunks))
-	for _, chunk := range chunks {
-		cp := cloneMessagePart(part)
-		cp["content"] = chunk
-		out = append(out, cp)
-	}
-	return out
-}
-
-func cloneMessagePart(part agui.MessagePart) agui.MessagePart {
-	cp := make(agui.MessagePart, len(part))
-	for key, value := range part {
-		cp[key] = value
-	}
-	return cp
+	cp["messages"] = messages
+	return []agui.Event{sanitizeRawEvent(cp, budget)}
 }
 
 func sanitizeRawEvent(evt agui.Event, budget int) agui.Event {

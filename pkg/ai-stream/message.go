@@ -9,46 +9,351 @@ import (
 
 func (t Run) Text() string {
 	var out strings.Builder
-	for _, evt := range t.Events {
-		if evt["type"] == agui.EventTextMessageContent {
-			if delta, _ := evt["delta"].(string); delta != "" {
-				out.WriteString(delta)
+	for _, message := range t.Messages(false) {
+		if message.Role != agui.RoleAssistant {
+			continue
+		}
+		if content, _ := message.Content.(string); content != "" {
+			if out.Len() > 0 {
+				out.WriteString("\n\n")
 			}
+			out.WriteString(content)
 		}
 	}
 	return out.String()
 }
 
-func (t Run) FinalUIMessage(textBudget int, includeThinking bool) agui.UIMessage {
-	message := agui.UIMessage{
+type projectedMessage struct {
+	message   agui.Message
+	content   strings.Builder
+	toolCalls map[string]*agui.MessageToolCall
+	toolOrder []string
+}
+
+type projectedToolCall struct {
+	parent *projectedMessage
+	call   *agui.MessageToolCall
+	args   strings.Builder
+}
+
+func (t Run) Messages(includeReasoning bool) []agui.Message {
+	if snapshot := latestMessagesSnapshot(t.Events, includeReasoning); len(snapshot) > 0 {
+		return snapshot
+	}
+
+	byID := map[string]*projectedMessage{}
+	var order []string
+	toolCalls := map[string]*projectedToolCall{}
+	currentTextMessageID := ""
+	currentReasoningMessageID := ""
+
+	ensureMessage := func(messageID, role string) *projectedMessage {
+		if messageID == "" {
+			messageID = t.MessageID
+		}
+		if role == "" {
+			role = agui.RoleAssistant
+		}
+		message := byID[messageID]
+		if message != nil {
+			if message.message.Role == "" {
+				message.message.Role = role
+			}
+			return message
+		}
+		message = &projectedMessage{
+			message: agui.Message{ID: messageID, Role: role},
+		}
+		byID[messageID] = message
+		order = append(order, messageID)
+		return message
+	}
+
+	ensureToolCall := func(toolCallID string, evt agui.Event) *projectedToolCall {
+		if toolCallID == "" {
+			return nil
+		}
+		if tool := toolCalls[toolCallID]; tool != nil {
+			return tool
+		}
+		parentID, _ := evt["parentMessageId"].(string)
+		parent := ensureMessage(parentID, agui.RoleAssistant)
+		call := &agui.MessageToolCall{
+			ID:   toolCallID,
+			Type: "function",
+			Function: agui.ToolCallFunction{
+				Name: firstString(evt["toolName"], evt["toolCallName"]),
+			},
+		}
+		if parent.toolCalls == nil {
+			parent.toolCalls = map[string]*agui.MessageToolCall{}
+		}
+		parent.toolCalls[toolCallID] = call
+		parent.toolOrder = append(parent.toolOrder, toolCallID)
+		tool := &projectedToolCall{parent: parent, call: call}
+		toolCalls[toolCallID] = tool
+		return tool
+	}
+
+	for _, evt := range t.Events {
+		switch evt["type"] {
+		case agui.EventTextMessageStart:
+			messageID, _ := evt["messageId"].(string)
+			role := firstString(evt["role"], agui.RoleAssistant)
+			ensureMessage(messageID, role)
+			currentTextMessageID = messageID
+		case agui.EventTextMessageContent:
+			messageID, _ := evt["messageId"].(string)
+			if messageID == "" {
+				messageID = currentTextMessageID
+			}
+			message := ensureMessage(messageID, agui.RoleAssistant)
+			message.content.WriteString(asString(evt["delta"]))
+		case agui.EventTextMessageChunk:
+			messageID, _ := evt["messageId"].(string)
+			if messageID == "" {
+				messageID = currentTextMessageID
+			}
+			if messageID == "" {
+				messageID = t.MessageID
+			}
+			currentTextMessageID = messageID
+			message := ensureMessage(messageID, firstString(evt["role"], agui.RoleAssistant))
+			message.content.WriteString(asString(evt["delta"]))
+		case agui.EventReasoningMsgStart:
+			if !includeReasoning {
+				continue
+			}
+			messageID, _ := evt["messageId"].(string)
+			ensureMessage(messageID, "reasoning")
+			currentReasoningMessageID = messageID
+		case agui.EventReasoningMsgCont:
+			if !includeReasoning {
+				continue
+			}
+			messageID, _ := evt["messageId"].(string)
+			if messageID == "" {
+				messageID = currentReasoningMessageID
+			}
+			message := ensureMessage(messageID, "reasoning")
+			message.content.WriteString(asString(evt["delta"]))
+		case agui.EventReasoningMsgChunk:
+			if !includeReasoning {
+				continue
+			}
+			messageID, _ := evt["messageId"].(string)
+			if messageID == "" {
+				messageID = currentReasoningMessageID
+			}
+			if messageID == "" {
+				messageID = t.MessageID + "-reasoning"
+			}
+			currentReasoningMessageID = messageID
+			message := ensureMessage(messageID, "reasoning")
+			message.content.WriteString(asString(evt["delta"]))
+		case agui.EventReasoningEncrypted:
+			entityID, _ := evt["entityId"].(string)
+			encryptedValue, _ := evt["encryptedValue"].(string)
+			switch evt["subtype"] {
+			case "message":
+				ensureMessage(entityID, "reasoning").message.EncryptedValue = encryptedValue
+			case "tool-call":
+				if tool := toolCalls[entityID]; tool != nil {
+					tool.call.EncryptedValue = encryptedValue
+				}
+			}
+		case agui.EventToolCallStart:
+			toolCallID, _ := evt["toolCallId"].(string)
+			tool := ensureToolCall(toolCallID, evt)
+			if tool != nil && tool.call.Function.Name == "" {
+				tool.call.Function.Name = firstString(evt["toolName"], evt["toolCallName"])
+			}
+		case agui.EventToolCallArgs:
+			toolCallID, _ := evt["toolCallId"].(string)
+			tool := ensureToolCall(toolCallID, evt)
+			if tool == nil {
+				continue
+			}
+			if delta, _ := evt["delta"].(string); delta != "" {
+				tool.args.WriteString(delta)
+				tool.call.Function.Arguments = tool.args.String()
+			}
+			if args, ok := evt["args"]; ok {
+				tool.call.Function.Arguments = asString(jsonString(args))
+			}
+		case agui.EventToolCallChunk:
+			toolCallID, _ := evt["toolCallId"].(string)
+			tool := ensureToolCall(toolCallID, evt)
+			if tool == nil {
+				continue
+			}
+			if tool.call.Function.Name == "" {
+				tool.call.Function.Name = firstString(evt["toolName"], evt["toolCallName"])
+			}
+			if delta, _ := evt["delta"].(string); delta != "" {
+				tool.args.WriteString(delta)
+				tool.call.Function.Arguments = tool.args.String()
+			}
+		case agui.EventToolCallEnd:
+			toolCallID, _ := evt["toolCallId"].(string)
+			tool := ensureToolCall(toolCallID, evt)
+			if tool != nil && tool.call.Function.Name == "" {
+				tool.call.Function.Name = firstString(evt["toolName"], evt["toolCallName"])
+			}
+		case agui.EventToolCallResult:
+			messageID, _ := evt["messageId"].(string)
+			toolCallID, _ := evt["toolCallId"].(string)
+			message := ensureMessage(messageID, firstString(evt["role"], agui.RoleTool))
+			message.message.ToolCallID = toolCallID
+			message.content.WriteString(asString(evt["content"]))
+			if state, _ := evt["state"].(string); state == agui.ToolResultStateError {
+				message.message.Error = asString(evt["error"])
+			}
+		case agui.EventActivitySnapshot:
+			messageID, _ := evt["messageId"].(string)
+			message := ensureMessage(messageID, "activity")
+			message.message.ActivityType = firstString(evt["activityType"])
+			if content, ok := evt["content"].(map[string]any); ok {
+				message.message.Content = content
+			}
+		}
+	}
+
+	out := make([]agui.Message, 0, len(order))
+	for _, messageID := range order {
+		state := byID[messageID]
+		if state == nil {
+			continue
+		}
+		message := state.message
+		if state.content.Len() > 0 {
+			message.Content = state.content.String()
+		}
+		if len(state.toolOrder) > 0 {
+			message.ToolCalls = make([]agui.MessageToolCall, 0, len(state.toolOrder))
+			for _, toolCallID := range state.toolOrder {
+				call := state.toolCalls[toolCallID]
+				if call != nil {
+					message.ToolCalls = append(message.ToolCalls, *call)
+				}
+			}
+		}
+		if message.Role == "reasoning" && !includeReasoning {
+			continue
+		}
+		if message.Content == nil && len(message.ToolCalls) == 0 && message.ToolCallID == "" && message.EncryptedValue == "" && message.ActivityType == "" {
+			continue
+		}
+		out = append(out, message)
+	}
+	return out
+}
+
+func latestMessagesSnapshot(events []agui.Event, includeReasoning bool) []agui.Message {
+	var snapshot []agui.Message
+	for _, evt := range events {
+		if evt["type"] != agui.EventMessagesSnapshot {
+			continue
+		}
+		messages, ok := evt["messages"].([]agui.Message)
+		if !ok {
+			continue
+		}
+		snapshot = messages
+	}
+	if len(snapshot) == 0 {
+		return nil
+	}
+	out := make([]agui.Message, 0, len(snapshot))
+	for _, message := range snapshot {
+		if message.Role == "reasoning" && !includeReasoning {
+			continue
+		}
+		out = append(out, message)
+	}
+	return out
+}
+
+type projectedPart struct {
+	part    MessagePart
+	content strings.Builder
+}
+
+func (t Run) FinalBeeperUIMessage(textBudget int, includeThinking bool) UIMessage {
+	message := UIMessage{
 		ID:       t.MessageID,
 		Role:     agui.RoleAssistant,
 		Metadata: t.UIMessageMetadata(true).Map(),
 	}
-	var textPart agui.MessagePart
-	var thinkingPart agui.MessagePart
-	var textContent, thinkingContent strings.Builder
-	toolParts := map[string]agui.MessagePart{}
-	approvalByID := map[string]any{}
-	appendPart := func(part agui.MessagePart) agui.MessagePart {
+	textParts := map[string]*projectedPart{}
+	thinkingParts := map[string]*projectedPart{}
+	toolParts := map[string]MessagePart{}
+	currentTextMessageID := ""
+	currentReasoningMessageID := ""
+	appendPart := func(part MessagePart) MessagePart {
 		message.Parts = append(message.Parts, part)
 		return part
 	}
+	ensureTextPart := func(messageID string) *projectedPart {
+		if messageID == "" {
+			messageID = t.MessageID
+		}
+		if part := textParts[messageID]; part != nil {
+			return part
+		}
+		part := appendPart(MessagePart{"type": "text", "id": messageID, "messageId": messageID, "content": "", "state": agui.PartStateStreaming})
+		projected := &projectedPart{part: part}
+		textParts[messageID] = projected
+		return projected
+	}
+	ensureThinkingPart := func(messageID string) *projectedPart {
+		if messageID == "" {
+			messageID = t.MessageID + "-reasoning"
+		}
+		if part := thinkingParts[messageID]; part != nil {
+			return part
+		}
+		part := appendPart(MessagePart{"type": "thinking", "id": messageID, "messageId": messageID, "content": "", "state": agui.PartStateStreaming})
+		projected := &projectedPart{part: part}
+		thinkingParts[messageID] = projected
+		return projected
+	}
 	for _, evt := range t.Events {
 		switch evt["type"] {
+		case agui.EventTextMessageStart:
+			messageID, _ := evt["messageId"].(string)
+			currentTextMessageID = messageID
 		case agui.EventTextMessageContent:
 			delta, _ := evt["delta"].(string)
 			if delta == "" {
 				continue
 			}
-			if textPart == nil {
-				textPart = appendPart(agui.MessagePart{"type": "text", "content": "", "state": agui.PartStateStreaming})
+			messageID, _ := evt["messageId"].(string)
+			if messageID == "" {
+				messageID = currentTextMessageID
 			}
-			textContent.WriteString(delta)
+			ensureTextPart(messageID).content.WriteString(delta)
+		case agui.EventTextMessageChunk:
+			messageID, _ := evt["messageId"].(string)
+			if messageID == "" {
+				messageID = currentTextMessageID
+			}
+			currentTextMessageID = messageID
+			if delta, _ := evt["delta"].(string); delta != "" {
+				ensureTextPart(messageID).content.WriteString(delta)
+			}
 		case agui.EventTextMessageEnd:
-			if textPart != nil {
-				textPart["state"] = agui.PartStateDone
+			messageID, _ := evt["messageId"].(string)
+			if part := textParts[messageID]; part != nil {
+				part.part["state"] = agui.PartStateDone
 			}
+		case agui.EventReasoningMsgStart:
+			if !includeThinking {
+				continue
+			}
+			messageID, _ := evt["messageId"].(string)
+			currentReasoningMessageID = messageID
+			ensureThinkingPart(messageID)
 		case agui.EventReasoningMsgCont:
 			delta, _ := evt["delta"].(string)
 			if delta == "" {
@@ -57,20 +362,34 @@ func (t Run) FinalUIMessage(textBudget int, includeThinking bool) agui.UIMessage
 			if !includeThinking {
 				continue
 			}
-			if thinkingPart == nil {
-				thinkingPart = appendPart(agui.MessagePart{"type": "thinking", "content": "", "state": agui.PartStateStreaming})
+			messageID, _ := evt["messageId"].(string)
+			if messageID == "" {
+				messageID = currentReasoningMessageID
 			}
-			thinkingContent.WriteString(delta)
+			ensureThinkingPart(messageID).content.WriteString(delta)
+		case agui.EventReasoningMsgChunk:
+			if !includeThinking {
+				continue
+			}
+			messageID, _ := evt["messageId"].(string)
+			if messageID == "" {
+				messageID = currentReasoningMessageID
+			}
+			currentReasoningMessageID = messageID
+			if delta, _ := evt["delta"].(string); delta != "" {
+				ensureThinkingPart(messageID).content.WriteString(delta)
+			}
 		case agui.EventReasoningMsgEnd:
-			if thinkingPart != nil {
-				thinkingPart["state"] = agui.PartStateDone
+			messageID, _ := evt["messageId"].(string)
+			if part := thinkingParts[messageID]; part != nil {
+				part.part["state"] = agui.PartStateDone
 			}
 		case agui.EventToolCallStart:
 			toolCallID, _ := evt["toolCallId"].(string)
 			if toolCallID == "" {
 				continue
 			}
-			part := agui.MessagePart{
+			part := MessagePart{
 				"type":       "tool-call",
 				"id":         toolCallID,
 				"toolCallId": toolCallID,
@@ -81,9 +400,6 @@ func (t Run) FinalUIMessage(textBudget int, includeThinking bool) agui.UIMessage
 			if index, ok := evt["index"]; ok {
 				part["index"] = index
 			}
-			if approval, ok := evt["approval"]; ok {
-				part["approval"] = approval
-			}
 			if metadata, ok := evt["metadata"]; ok {
 				part["metadata"] = metadata
 			}
@@ -92,7 +408,7 @@ func (t Run) FinalUIMessage(textBudget int, includeThinking bool) agui.UIMessage
 			toolCallID, _ := evt["toolCallId"].(string)
 			part := toolParts[toolCallID]
 			if part == nil {
-				part = appendPart(agui.MessagePart{"type": "tool-call", "id": toolCallID, "toolCallId": toolCallID, "arguments": ""})
+				part = appendPart(MessagePart{"type": "tool-call", "id": toolCallID, "toolCallId": toolCallID, "arguments": ""})
 				toolParts[toolCallID] = part
 			}
 			part["state"] = firstString(evt["state"])
@@ -106,7 +422,7 @@ func (t Run) FinalUIMessage(textBudget int, includeThinking bool) agui.UIMessage
 			toolCallID, _ := evt["toolCallId"].(string)
 			part := toolParts[toolCallID]
 			if part == nil {
-				part = appendPart(agui.MessagePart{"type": "tool-call", "id": toolCallID, "toolCallId": toolCallID})
+				part = appendPart(MessagePart{"type": "tool-call", "id": toolCallID, "toolCallId": toolCallID})
 				toolParts[toolCallID] = part
 			}
 			part["name"] = firstString(part["name"], evt["toolName"], evt["toolCallName"])
@@ -124,32 +440,56 @@ func (t Run) FinalUIMessage(textBudget int, includeThinking bool) agui.UIMessage
 			}
 			part := toolParts[toolCallID]
 			if part == nil {
-				part = appendPart(agui.MessagePart{"type": "tool-call", "id": toolCallID, "toolCallId": toolCallID})
+				part = appendPart(MessagePart{"type": "tool-call", "id": toolCallID, "toolCallId": toolCallID})
 				toolParts[toolCallID] = part
 			}
-			part["state"] = agui.ToolStateInputComplete
 			content := asString(evt["content"])
-			if previous := asString(part["output"]); previous != "" {
+			if previous, ok := part["output"].(string); ok && previous != "" {
 				content = previous + content
 			}
 			if content != "" {
-				part["output"] = toolResultOutput(content, firstString(evt["state"]), evt["error"])
+				output := toolResultOutput(content, firstString(evt["state"]), evt["error"])
+				part["output"] = output
+				if result, ok := ParseApprovalToolResult(output); ok {
+					part["approvalResponse"] = result
+					part["state"] = ToolStateApprovalResponded
+				} else {
+					part["state"] = agui.ToolStateInputComplete
+				}
+			} else {
+				part["state"] = agui.ToolStateInputComplete
+			}
+		case agui.EventRunFinished:
+			for _, interrupt := range runFinishedInterrupts(evt["outcome"]) {
+				if interrupt.Reason != agui.InterruptReasonToolCall || interrupt.ToolCallID == "" {
+					continue
+				}
+				part := toolParts[interrupt.ToolCallID]
+				if part == nil {
+					part = appendPart(MessagePart{"type": "tool-call", "id": interrupt.ToolCallID, "toolCallId": interrupt.ToolCallID})
+					toolParts[interrupt.ToolCallID] = part
+				}
+				part["state"] = ToolStateApprovalRequested
+				if metadata := interrupt.Metadata; metadata != nil {
+					if toolName := firstString(metadata["toolName"]); toolName != "" {
+						part["name"] = firstString(part["name"], toolName)
+					}
+					if input, ok := metadata["input"]; ok {
+						part["input"] = input
+					}
+					if approval, ok := metadata["approval"]; ok {
+						part["approval"] = approval
+					} else {
+						part["approval"] = ToolApproval{ID: interrupt.ID, NeedsApproval: true}
+					}
+				} else {
+					part["approval"] = ToolApproval{ID: interrupt.ID, NeedsApproval: true}
+				}
 			}
 		case agui.EventCustom:
 			name, _ := evt["name"].(string)
 			value, _ := evt["value"].(map[string]any)
 			switch name {
-			case agui.ApprovalCustomRequested:
-				if toolCallID, _ := value["toolCallId"].(string); toolCallID != "" {
-					if part := toolParts[toolCallID]; part != nil {
-						part["approval"] = value["approval"]
-						part["state"] = agui.ToolStateApprovalRequested
-					}
-				}
-			case agui.ApprovalCustomResponded:
-				if approval, ok := value["approval"]; ok {
-					approvalByID[approvalMapID(approval)] = approval
-				}
 			case "com.beeper.source":
 				part := cloneValueMap(value)
 				part["type"] = "source-url"
@@ -169,15 +509,7 @@ func (t Run) FinalUIMessage(textBudget int, includeThinking bool) agui.UIMessage
 				part["type"] = "file"
 				message.Parts = append(message.Parts, part)
 			case "com.beeper.data":
-				message.Parts = append(message.Parts, agui.MessagePart{"type": "data-com-beeper-data", "data": value})
-			}
-		}
-	}
-	for _, part := range toolParts {
-		if approvalID := approvalMapID(part["approval"]); approvalID != "" {
-			if response := approvalByID[approvalID]; response != nil {
-				part["approvalResponse"] = response
-				part["state"] = agui.ToolStateApprovalResponded
+				message.Parts = append(message.Parts, MessagePart{"type": "data-com-beeper-data", "data": value})
 			}
 		}
 	}
@@ -186,17 +518,17 @@ func (t Run) FinalUIMessage(textBudget int, includeThinking bool) agui.UIMessage
 			finalizeOpenToolPart(part, t.Status.State)
 		}
 	}
-	if textPart != nil {
-		textPart["content"] = textContent.String()
+	for _, projected := range textParts {
+		projected.part["content"] = projected.content.String()
+		compactTextPart(projected.part, textBudget)
 	}
-	if thinkingPart != nil {
-		thinkingPart["content"] = thinkingContent.String()
+	for _, projected := range thinkingParts {
+		projected.part["content"] = projected.content.String()
+		compactTextPart(projected.part, textBudget)
 	}
-	compactTextPart(textPart, textBudget)
-	compactTextPart(thinkingPart, textBudget)
 	if len(message.Parts) > 1 {
-		visible := make([]agui.MessagePart, 0, len(message.Parts))
-		other := make([]agui.MessagePart, 0, len(message.Parts))
+		visible := make([]MessagePart, 0, len(message.Parts))
+		other := make([]MessagePart, 0, len(message.Parts))
 		for _, part := range message.Parts {
 			switch part["type"] {
 			case "text", "thinking":
@@ -250,7 +582,7 @@ func toolResultOutput(content string, state string, err any) any {
 	return result
 }
 
-func finalizeOpenToolPart(part agui.MessagePart, runState string) {
+func finalizeOpenToolPart(part MessagePart, runState string) {
 	if part == nil {
 		return
 	}
@@ -259,7 +591,7 @@ func finalizeOpenToolPart(part agui.MessagePart, runState string) {
 	}
 	state, _ := part["state"].(string)
 	switch state {
-	case agui.ToolStateApprovalResponded:
+	case ToolStateApprovalRequested, ToolStateApprovalResponded:
 		return
 	}
 	reason := "run finalized before tool completed"
@@ -276,20 +608,65 @@ func finalizeOpenToolPart(part agui.MessagePart, runState string) {
 	}
 }
 
-func (t Run) InitialUIMessage() agui.UIMessage {
-	message := agui.UIMessage{
+func runFinishedInterrupts(value any) []agui.Interrupt {
+	switch outcome := value.(type) {
+	case agui.RunFinishedOutcome:
+		if outcome.Type != agui.OutcomeInterrupt {
+			return nil
+		}
+		return outcome.Interrupts
+	case *agui.RunFinishedOutcome:
+		if outcome == nil {
+			return nil
+		}
+		return runFinishedInterrupts(*outcome)
+	case map[string]any:
+		if outcome["type"] != agui.OutcomeInterrupt {
+			return nil
+		}
+		switch rawInterrupts := outcome["interrupts"].(type) {
+		case []agui.Interrupt:
+			return rawInterrupts
+		case []any:
+			interrupts := make([]agui.Interrupt, 0, len(rawInterrupts))
+			for _, raw := range rawInterrupts {
+				switch interrupt := raw.(type) {
+				case agui.Interrupt:
+					interrupts = append(interrupts, interrupt)
+				case map[string]any:
+					metadata, _ := interrupt["metadata"].(map[string]any)
+					responseSchema, _ := interrupt["responseSchema"].(map[string]any)
+					interrupts = append(interrupts, agui.Interrupt{
+						ID:             firstString(interrupt["id"]),
+						Reason:         firstString(interrupt["reason"]),
+						Message:        firstString(interrupt["message"]),
+						ToolCallID:     firstString(interrupt["toolCallId"]),
+						ResponseSchema: responseSchema,
+						ExpiresAt:      firstString(interrupt["expiresAt"]),
+						Metadata:       metadata,
+					})
+				}
+			}
+			return interrupts
+		}
+	}
+	return nil
+}
+
+func (t Run) InitialBeeperUIMessage() UIMessage {
+	message := UIMessage{
 		ID:       t.MessageID,
 		Role:     agui.RoleAssistant,
 		Metadata: t.UIMessageMetadata(false).Map(),
 	}
 	if t.Preview.Text != "" {
-		message.Parts = []agui.MessagePart{{
+		message.Parts = []MessagePart{{
 			"type":    "text",
 			"content": t.Preview.Text,
 			"state":   agui.PartStateStreaming,
 		}}
 	} else {
-		message.Parts = []agui.MessagePart{}
+		message.Parts = []MessagePart{}
 	}
 	return message
 }
@@ -306,7 +683,7 @@ func (t Run) UIMessageMetadata(includeUsage bool) UIMessageMetadata {
 	return metadata
 }
 
-func compactTextPart(part agui.MessagePart, budget int) {
+func compactTextPart(part MessagePart, budget int) {
 	if part == nil {
 		return
 	}
@@ -340,8 +717,8 @@ func asString(value any) string {
 	}
 }
 
-func cloneValueMap(value map[string]any) agui.MessagePart {
-	cp := make(agui.MessagePart, len(value)+1)
+func cloneValueMap(value map[string]any) MessagePart {
+	cp := make(MessagePart, len(value)+1)
 	for key, item := range value {
 		cp[key] = item
 	}
@@ -353,27 +730,6 @@ func firstString(values ...any) string {
 		if text, ok := value.(string); ok && text != "" {
 			return text
 		}
-	}
-	return ""
-}
-
-func approvalMapID(value any) string {
-	switch typed := value.(type) {
-	case agui.ToolApproval:
-		return typed.ID
-	case *agui.ToolApproval:
-		if typed != nil {
-			return typed.ID
-		}
-	case agui.ToolApprovalResponse:
-		return typed.ID
-	case *agui.ToolApprovalResponse:
-		if typed != nil {
-			return typed.ID
-		}
-	case map[string]any:
-		id, _ := typed["id"].(string)
-		return id
 	}
 	return ""
 }

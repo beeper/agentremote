@@ -44,42 +44,84 @@ const (
 )
 
 const (
-	ToolStateAwaitingInput     = "awaiting-input"
-	ToolStateInputStreaming    = "input-streaming"
-	ToolStateInputComplete     = "input-complete"
-	ToolStateApprovalRequested = "approval-requested"
-	ToolStateApprovalResponded = "approval-responded"
-	ToolResultStateStreaming   = "streaming"
-	ToolResultStateComplete    = "complete"
-	ToolResultStateError       = "error"
-	PartStateStreaming         = "streaming"
-	PartStateDone              = "done"
-	ApprovalCustomRequested    = "approval-requested"
-	ApprovalCustomResponded    = "approval-responded"
-	FinishReasonStop           = "stop"
-	FinishReasonLength         = "length"
-	FinishReasonContentFilter  = "content_filter"
-	FinishReasonToolCalls      = "tool_calls"
-	FinishReasonOther          = "other"
+	ToolStateAwaitingInput    = "awaiting-input"
+	ToolStateInputStreaming   = "input-streaming"
+	ToolStateInputComplete    = "input-complete"
+	ToolResultStateStreaming  = "streaming"
+	ToolResultStateComplete   = "complete"
+	ToolResultStateError      = "error"
+	PartStateStreaming        = "streaming"
+	PartStateDone             = "done"
+	FinishReasonStop          = "stop"
+	FinishReasonLength        = "length"
+	FinishReasonContentFilter = "content_filter"
+	FinishReasonToolCalls     = "tool_calls"
+	FinishReasonOther         = "other"
+	OutcomeSuccess            = "success"
+	OutcomeInterrupt          = "interrupt"
+	InterruptReasonToolCall   = "tool_call"
+	InterruptReasonInput      = "input_required"
+	InterruptReasonConfirm    = "confirmation"
+	ResumeStatusResolved      = "resolved"
+	ResumeStatusCancelled     = "cancelled"
 )
 
 type Event map[string]any
 
-type UIMessage struct {
-	ID        string         `json:"id"`
-	Role      string         `json:"role"`
-	Parts     []MessagePart  `json:"parts"`
-	CreatedAt *time.Time     `json:"createdAt,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+type JSONSchema map[string]any
+
+type Message struct {
+	ID             string            `json:"id"`
+	Role           string            `json:"role"`
+	Content        any               `json:"content,omitempty"`
+	Name           string            `json:"name,omitempty"`
+	ToolCalls      []MessageToolCall `json:"toolCalls,omitempty"`
+	ToolCallID     string            `json:"toolCallId,omitempty"`
+	Error          string            `json:"error,omitempty"`
+	ActivityType   string            `json:"activityType,omitempty"`
+	EncryptedValue string            `json:"encryptedValue,omitempty"`
+	Metadata       map[string]any    `json:"metadata,omitempty"`
 }
 
-type MessagePart map[string]any
+type MessageToolCall struct {
+	ID             string           `json:"id"`
+	Type           string           `json:"type"`
+	Function       ToolCallFunction `json:"function"`
+	EncryptedValue string           `json:"encryptedValue,omitempty"`
+}
+
+type ToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+type RunFinishedOutcome struct {
+	Type       string      `json:"type"`
+	Interrupts []Interrupt `json:"interrupts,omitempty"`
+}
+
+type Interrupt struct {
+	ID             string         `json:"id"`
+	Reason         string         `json:"reason"`
+	Message        string         `json:"message,omitempty"`
+	ToolCallID     string         `json:"toolCallId,omitempty"`
+	ResponseSchema JSONSchema     `json:"responseSchema,omitempty"`
+	ExpiresAt      string         `json:"expiresAt,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
+}
+
+type ResumeEntry struct {
+	InterruptID string `json:"interruptId"`
+	Status      string `json:"status"`
+	Payload     any    `json:"payload,omitempty"`
+}
 
 type RunAgentInput struct {
 	ThreadID       string         `json:"threadId,omitempty"`
 	RunID          string         `json:"runId,omitempty"`
 	State          map[string]any `json:"state,omitempty"`
-	Messages       []UIMessage    `json:"messages,omitempty"`
+	Messages       []Message      `json:"messages,omitempty"`
+	Resume         []ResumeEntry  `json:"resume,omitempty"`
 	Tools          []Tool         `json:"tools,omitempty"`
 	Context        []ContextItem  `json:"context,omitempty"`
 	ForwardedProps map[string]any `json:"forwardedProps,omitempty"`
@@ -87,32 +129,17 @@ type RunAgentInput struct {
 }
 
 type Tool struct {
-	Name          string         `json:"name"`
-	Description   string         `json:"description,omitempty"`
-	InputSchema   map[string]any `json:"inputSchema,omitempty"`
-	OutputSchema  map[string]any `json:"outputSchema,omitempty"`
-	NeedsApproval bool           `json:"needsApproval,omitempty"`
+	Name          string     `json:"name"`
+	Description   string     `json:"description,omitempty"`
+	InputSchema   JSONSchema `json:"inputSchema,omitempty"`
+	OutputSchema  JSONSchema `json:"outputSchema,omitempty"`
+	NeedsApproval bool       `json:"needsApproval,omitempty"`
 }
 
 type ContextItem struct {
 	Type  string         `json:"type"`
 	Value any            `json:"value,omitempty"`
 	Meta  map[string]any `json:"meta,omitempty"`
-}
-
-type ToolApproval struct {
-	ID            string         `json:"id"`
-	NeedsApproval bool           `json:"needsApproval"`
-	Fields        map[string]any `json:"fields,omitempty"`
-}
-
-type ToolApprovalResponse struct {
-	ID       string         `json:"id"`
-	Approved bool           `json:"approved"`
-	Always   bool           `json:"always,omitempty"`
-	Reason   string         `json:"reason,omitempty"`
-	Fields   map[string]any `json:"fields,omitempty"`
-	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type Usage struct {
@@ -153,6 +180,10 @@ func (b EventBuilder) RunStarted(threadID, runID string) Event {
 }
 
 func (b EventBuilder) RunFinished(threadID, runID, finishReason string, usage Usage) Event {
+	return b.RunFinishedWithOutcome(threadID, runID, finishReason, usage, RunFinishedOutcome{Type: OutcomeSuccess})
+}
+
+func (b EventBuilder) RunFinishedWithOutcome(threadID, runID, finishReason string, usage Usage, outcome RunFinishedOutcome) Event {
 	evt := b.base(EventRunFinished)
 	evt["threadId"] = threadID
 	evt["runId"] = runID
@@ -160,6 +191,9 @@ func (b EventBuilder) RunFinished(threadID, runID, finishReason string, usage Us
 		evt["finishReason"] = NormalizeFinishReason(finishReason)
 	}
 	evt["usage"] = usage
+	if outcome.Type != "" {
+		evt["outcome"] = outcome
+	}
 	return evt
 }
 
@@ -262,11 +296,11 @@ func (b EventBuilder) ReasoningEncryptedValue(subtype, entityID, encryptedValue 
 	return evt
 }
 
-func (b EventBuilder) ToolCallStart(messageID, toolCallID, name string, index *int, approval *ToolApproval) Event {
-	return b.ToolCallStartWithMetadata(messageID, toolCallID, name, index, approval, nil)
+func (b EventBuilder) ToolCallStart(messageID, toolCallID, name string, index *int) Event {
+	return b.ToolCallStartWithMetadata(messageID, toolCallID, name, index, nil)
 }
 
-func (b EventBuilder) ToolCallStartWithMetadata(messageID, toolCallID, name string, index *int, approval *ToolApproval, metadata map[string]any) Event {
+func (b EventBuilder) ToolCallStartWithMetadata(messageID, toolCallID, name string, index *int, metadata map[string]any) Event {
 	evt := b.base(EventToolCallStart)
 	if messageID != "" {
 		evt["parentMessageId"] = messageID
@@ -280,12 +314,7 @@ func (b EventBuilder) ToolCallStartWithMetadata(messageID, toolCallID, name stri
 	if index != nil {
 		evt["index"] = *index
 	}
-	if approval != nil {
-		evt["approval"] = approval
-		evt["state"] = ToolStateApprovalRequested
-	} else {
-		evt["state"] = ToolStateAwaitingInput
-	}
+	evt["state"] = ToolStateAwaitingInput
 	return evt
 }
 
@@ -300,16 +329,13 @@ func (b EventBuilder) ToolCallArgs(toolCallID, delta string, args any) Event {
 	return evt
 }
 
-func (b EventBuilder) ToolCallEnd(toolCallID, name string, input, result any, state string) Event {
+func (b EventBuilder) ToolCallEnd(toolCallID, name string, input any, state string) Event {
 	evt := b.base(EventToolCallEnd)
 	evt["toolCallId"] = toolCallID
 	evt["toolCallName"] = name
 	evt["toolName"] = name
 	if input != nil {
 		evt["input"] = input
-	}
-	if result != nil {
-		evt["result"] = result
 	}
 	if state == "" {
 		state = ToolStateInputComplete
@@ -387,7 +413,7 @@ func (b EventBuilder) StateDelta(delta any) Event {
 	return evt
 }
 
-func (b EventBuilder) MessagesSnapshot(messages []UIMessage) Event {
+func (b EventBuilder) MessagesSnapshot(messages []Message) Event {
 	evt := b.base(EventMessagesSnapshot)
 	evt["messages"] = messages
 	return evt
@@ -426,31 +452,4 @@ func (b EventBuilder) Custom(name string, value any) Event {
 	evt["name"] = name
 	evt["value"] = value
 	return evt
-}
-
-func TextPart(content string) MessagePart {
-	return MessagePart{"type": "text", "content": content}
-}
-
-func ThinkingPart(content string) MessagePart {
-	return MessagePart{"type": "thinking", "content": content}
-}
-
-func ToolCallPart(id, name string, arguments any, state string, approval *ToolApproval, output any) MessagePart {
-	part := MessagePart{"type": "tool-call", "id": id, "name": name, "arguments": arguments, "state": state}
-	if approval != nil {
-		part["approval"] = approval
-	}
-	if output != nil {
-		part["output"] = output
-	}
-	return part
-}
-
-func ToolResultPart(toolCallID string, content any, state string, err any) MessagePart {
-	part := MessagePart{"type": "tool-result", "toolCallId": toolCallID, "content": content, "state": state}
-	if err != nil {
-		part["error"] = err
-	}
-	return part
 }

@@ -14,7 +14,7 @@ const ApprovalRelationType = event.RelationType("com.beeper.ai.approval")
 func AnchorContent(run aistream.Run) (*event.MessageEventContent, map[string]any) {
 	content := previewContent(run)
 	extra := map[string]any{
-		aistream.BeeperAIKey:         run.InitialUIMessage(),
+		aistream.BeeperAIKey:         run.InitialBeeperUIMessage(),
 		aistream.BeeperAIMetadataKey: run.Metadata(),
 		"com.beeper.stream": map[string]any{
 			"type": aistream.BeeperAIStreamDeltas,
@@ -26,7 +26,7 @@ func AnchorContent(run aistream.Run) (*event.MessageEventContent, map[string]any
 func FinalContent(run aistream.Run) (*event.MessageEventContent, map[string]any) {
 	content := previewContent(run)
 	extra := map[string]any{
-		aistream.BeeperAIKey:         run.FinalUIMessage(0, true),
+		aistream.BeeperAIKey:         run.FinalBeeperUIMessage(0, true),
 		aistream.BeeperAIMetadataKey: run.Metadata(),
 		"com.beeper.stream":          nil,
 	}

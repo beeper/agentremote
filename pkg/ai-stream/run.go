@@ -2,6 +2,7 @@ package aistream
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -14,7 +15,6 @@ const (
 	BeeperAIMetadataKey  = "com.beeper.ai.metadata"
 	BeeperAIStreamKey    = "com.beeper.llm"
 	BeeperAIStreamDeltas = BeeperAIStreamKey + ".deltas"
-	FinalPartsCustomName = "com.beeper.ai.final-parts"
 	DefaultModel         = "dummybridge/ag-ui"
 	CarrierBudgetBytes   = 40 * 1024
 	PreviewBudgetBytes   = 4096
@@ -30,6 +30,7 @@ type Run struct {
 	AgentName  string
 	Events     []agui.Event
 	Approvals  []ApprovalSummary
+	Interrupts []agui.Interrupt
 	Artifacts  ArtifactSummary
 	Data       map[string]any
 	Status     Status
@@ -72,20 +73,21 @@ func (m UIMessageMetadata) Map() map[string]any {
 }
 
 type RunMetadata struct {
-	Schema    string
-	Protocol  string
-	ThreadID  string
-	RunID     string
-	MessageID string
-	AgentID   string
-	AgentName string
-	Model     string
-	Usage     agui.Usage
-	Status    Status
-	Approvals []ApprovalSummary
-	Artifacts ArtifactSummary
-	Data      map[string]any
-	Preview   Preview
+	Schema     string
+	Protocol   string
+	ThreadID   string
+	RunID      string
+	MessageID  string
+	AgentID    string
+	AgentName  string
+	Model      string
+	Usage      agui.Usage
+	Status     Status
+	Approvals  []ApprovalSummary
+	Interrupts []agui.Interrupt
+	Artifacts  ArtifactSummary
+	Data       map[string]any
+	Preview    Preview
 }
 
 func (m RunMetadata) Map() map[string]any {
@@ -113,6 +115,7 @@ func (m RunMetadata) Map() map[string]any {
 		"usageDetails": usageDetails,
 		"status":       m.Status,
 		"approvals":    m.Approvals,
+		"interrupts":   m.Interrupts,
 		"artifacts":    m.Artifacts,
 		"data":         m.Data,
 		"preview":      m.Preview,
@@ -125,7 +128,7 @@ type ApprovalSummary struct {
 	State      string         `json:"state"`
 	Always     bool           `json:"always"`
 	Reason     string         `json:"reason,omitempty"`
-	Fields     map[string]any `json:"fields,omitempty"`
+	EditedArgs map[string]any `json:"editedArgs,omitempty"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
 }
 
@@ -143,9 +146,15 @@ type ArtifactSummary struct {
 }
 
 type Writer struct {
-	Run           *Run
-	builder       agui.EventBuilder
-	reasoningOpen bool
+	Run                       *Run
+	builder                   agui.EventBuilder
+	textMessages              map[int]string
+	textOpen                  map[int]bool
+	reasoningMessages         map[int]string
+	reasoningOpen             map[int]bool
+	reasoningPhaseID          string
+	reasoningPhaseOpen        bool
+	nextSyntheticReasoningIdx int
 }
 
 func NewRun(runID, threadID, model, agentID, agentName string, now time.Time) *Run {
@@ -182,7 +191,15 @@ func NewRun(runID, threadID, model, agentID, agentName string, now time.Time) *R
 }
 
 func NewWriter(run *Run, now func() time.Time) *Writer {
-	return &Writer{Run: run, builder: agui.NewEventBuilder(run.Model, now)}
+	return &Writer{
+		Run:               run,
+		builder:           agui.NewEventBuilder(run.Model, now),
+		textMessages:      map[int]string{},
+		textOpen:          map[int]bool{},
+		reasoningMessages: map[int]string{},
+		reasoningOpen:     map[int]bool{},
+		reasoningPhaseID:  "reasoning-" + run.RunID,
+	}
 }
 
 func (w *Writer) Add(evt agui.Event) {
@@ -195,26 +212,65 @@ func (w *Writer) Add(evt agui.Event) {
 
 func (w *Writer) Start() {
 	w.Add(w.builder.RunStarted(w.Run.ThreadID, w.Run.RunID))
-	w.Add(w.builder.TextMessageStart(w.Run.MessageID, agui.RoleAssistant))
 }
 
 func (w *Writer) Text(delta string) {
+	w.TextDelta(0, delta)
+}
+
+func (w *Writer) TextStart(index int) string {
+	return w.ensureTextMessage(index)
+}
+
+func (w *Writer) TextDelta(index int, delta string) {
 	if delta == "" {
 		return
 	}
-	w.Add(w.builder.TextMessageContent(w.Run.MessageID, delta))
+	messageID := w.ensureTextMessage(index)
+	w.Add(w.builder.TextMessageContent(messageID, delta))
+}
+
+func (w *Writer) TextEnd(index int) {
+	w.initState()
+	messageID := w.textMessages[index]
+	if messageID == "" || !w.textOpen[index] {
+		return
+	}
+	w.Add(w.builder.TextMessageEnd(messageID))
+	w.textOpen[index] = false
 }
 
 func (w *Writer) Thinking(delta string) {
 	if delta == "" {
 		return
 	}
-	if !w.reasoningOpen {
-		w.Add(w.builder.ReasoningStart(w.Run.MessageID))
-		w.Add(w.builder.ReasoningMessageStart(w.Run.MessageID))
-		w.reasoningOpen = true
+	index := w.nextSyntheticReasoningIdx
+	w.nextSyntheticReasoningIdx++
+	w.ReasoningDelta(index, delta)
+	w.ReasoningMessageEnd(index)
+}
+
+func (w *Writer) ReasoningMessageStart(index int) string {
+	w.ensureReasoningPhase()
+	return w.ensureReasoningMessage(index)
+}
+
+func (w *Writer) ReasoningDelta(index int, delta string) {
+	if delta == "" {
+		return
 	}
-	w.Add(w.builder.ReasoningMessageContent(w.Run.MessageID, delta))
+	messageID := w.ReasoningMessageStart(index)
+	w.Add(w.builder.ReasoningMessageContent(messageID, delta))
+}
+
+func (w *Writer) ReasoningMessageEnd(index int) {
+	w.initState()
+	messageID := w.reasoningMessages[index]
+	if messageID == "" || !w.reasoningOpen[index] {
+		return
+	}
+	w.Add(w.builder.ReasoningMessageEnd(messageID))
+	w.reasoningOpen[index] = false
 }
 
 func (w *Writer) StepStart(stepID string) {
@@ -225,33 +281,29 @@ func (w *Writer) StepFinish(stepID string) {
 	w.Add(w.builder.StepFinished(w.Run.MessageID, stepID))
 }
 
-func (w *Writer) ToolStart(toolCallID, name string, index int, approval *agui.ToolApproval) {
+func (w *Writer) ToolStart(toolCallID, name string, index int, approval *ToolApproval) {
 	w.ToolStartWithMetadata(toolCallID, name, index, approval, nil)
 }
 
-func (w *Writer) ToolStartWithMetadata(toolCallID, name string, index int, approval *agui.ToolApproval, metadata map[string]any) {
+func (w *Writer) ToolStartWithMetadata(toolCallID, name string, index int, approval *ToolApproval, metadata map[string]any) {
 	idx := index
-	w.Add(w.builder.ToolCallStartWithMetadata(w.Run.MessageID, toolCallID, name, &idx, approval, metadata))
+	parentMessageID := w.ensureTextMessage(0)
+	w.Add(w.builder.ToolCallStartWithMetadata(parentMessageID, toolCallID, name, &idx, metadata))
 	if approval != nil {
 		w.recordApprovalRequest(toolCallID, name, approval)
 	}
 }
 
-func (w *Writer) ToolApprovalRequested(toolCallID, name string, input any, approval agui.ToolApproval) {
+func (w *Writer) ToolApprovalRequested(toolCallID, name string, input any, approval ToolApproval) {
 	w.ToolApprovalRequestedWithMetadata(toolCallID, name, input, approval, nil)
 }
 
-func (w *Writer) ToolApprovalRequestedWithMetadata(toolCallID, name string, input any, approval agui.ToolApproval, metadata map[string]any) {
+func (w *Writer) ToolApprovalRequestedWithMetadata(toolCallID, name string, input any, approval ToolApproval, metadata map[string]any) {
 	w.recordApprovalRequest(toolCallID, name, &approval)
-	value := NewApprovalRequestedValue(*w.Run, toolCallID, name, input, approval)
-	value.Metadata = metadata
-	w.Add(w.builder.Custom(
-		agui.ApprovalCustomRequested,
-		value.Map(),
-	))
+	w.recordInterrupt(NewApprovalInterrupt(*w.Run, toolCallID, name, input, approval, metadata))
 }
 
-func (w *Writer) recordApprovalRequest(toolCallID, name string, approval *agui.ToolApproval) {
+func (w *Writer) recordApprovalRequest(toolCallID, name string, approval *ToolApproval) {
 	if approval == nil || approval.ID == "" {
 		return
 	}
@@ -281,67 +333,43 @@ func (w *Writer) ToolEnd(toolCallID, name string, input, result any) {
 			"status": "success",
 		}
 	}
-	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, jsonString(result), agui.ToolStateInputComplete))
+	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, agui.ToolStateInputComplete))
+	w.ToolResult(toolCallID, asString(jsonString(result)), toolResultState(result))
 }
 
 func (w *Writer) ToolApprovalInputComplete(toolCallID, name string, input any) {
-	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, nil, agui.ToolStateApprovalRequested))
+	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, agui.ToolStateInputComplete))
 }
 
-func (w *Writer) ToolApprovalResponded(toolCallID, name string, input any, response agui.ToolApprovalResponse) {
+func (w *Writer) ToolApprovalResponded(toolCallID, name string, input any, response ToolApprovalResponse) {
 	for i := range w.Run.Approvals {
 		if w.Run.Approvals[i].ID == response.ID {
 			w.Run.Approvals[i].State = approvalSummaryState(response)
 			w.Run.Approvals[i].Always = response.Always
 			w.Run.Approvals[i].Reason = response.Reason
-			w.Run.Approvals[i].Fields = response.Fields
+			w.Run.Approvals[i].EditedArgs = response.EditedArgs
 			w.Run.Approvals[i].Metadata = response.Metadata
 		}
 	}
-	w.Add(w.builder.Custom(agui.ApprovalCustomResponded, map[string]any{
-		"threadId":   w.Run.ThreadID,
-		"runId":      w.Run.RunID,
-		"messageId":  w.Run.MessageID,
-		"toolCallId": toolCallID,
-		"toolName":   name,
-		"approval":   response,
-	}))
-	result := map[string]any{
-		"approvalId": response.ID,
-		"always":     response.Always,
+	result := ApprovalToolResultFromResponse(response)
+	state := agui.ToolResultStateComplete
+	if !response.Approved {
+		state = agui.ToolResultStateError
 	}
-	if response.Fields != nil {
-		result["fields"] = response.Fields
-	}
-	if response.Metadata != nil {
-		result["metadata"] = response.Metadata
-	}
-	if response.Approved {
-		result["state"] = agui.ToolResultStateComplete
-		result["status"] = "success"
-		result["approved"] = true
-	} else {
-		reason := response.Reason
-		if reason == "" {
-			reason = "denied"
-		}
-		result["state"] = agui.ToolResultStateError
-		result["status"] = "denied"
-		result["reason"] = reason
-	}
-	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, jsonString(result), agui.ToolStateApprovalResponded))
+	w.ToolResult(toolCallID, asString(jsonString(result)), state)
 }
 
 func (w *Writer) ToolResult(toolCallID, content, state string) {
-	w.Add(w.builder.ToolCallResult(w.Run.MessageID, toolCallID, content, state, agui.RoleTool))
+	w.Add(w.builder.ToolCallResult(w.toolResultMessageID(toolCallID), toolCallID, content, state, agui.RoleTool))
 }
 
 func (w *Writer) ToolError(toolCallID, name string, input any, reason string) {
-	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, jsonString(map[string]any{
+	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, agui.ToolStateInputComplete))
+	w.ToolResult(toolCallID, asString(jsonString(map[string]any{
 		"state":  agui.ToolResultStateError,
 		"status": "failed",
 		"reason": reason,
-	}), agui.ToolStateInputComplete))
+	})), agui.ToolResultStateError)
 }
 
 func (w *Writer) ToolDenied(toolCallID, name string, input any, approvalID, reason string) {
@@ -354,14 +382,8 @@ func (w *Writer) ToolDenied(toolCallID, name string, input any, approvalID, reas
 			w.Run.Approvals[i].Reason = reason
 		}
 	}
-	w.Add(w.builder.Custom(agui.ApprovalCustomResponded, map[string]any{
-		"approval": agui.ToolApprovalResponse{ID: approvalID, Approved: false, Reason: reason},
-	}))
-	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, jsonString(map[string]any{
-		"state":  agui.ToolResultStateError,
-		"status": "denied",
-		"reason": reason,
-	}), agui.ToolStateApprovalResponded))
+	w.Add(w.builder.ToolCallEnd(toolCallID, name, input, agui.ToolStateInputComplete))
+	w.ToolResult(toolCallID, asString(jsonString(DeniedApprovalToolResult(approvalID, reason))), agui.ToolResultStateError)
 }
 
 func (w *Writer) StateSnapshot(state map[string]any) {
@@ -372,7 +394,7 @@ func (w *Writer) StateDelta(delta any) {
 	w.Add(w.builder.StateDelta(delta))
 }
 
-func (w *Writer) MessagesSnapshot(messages []agui.UIMessage) {
+func (w *Writer) MessagesSnapshot(messages []agui.Message) {
 	w.Add(w.builder.MessagesSnapshot(messages))
 }
 
@@ -392,6 +414,7 @@ func (w *Writer) FinishWithUsage(reason string, usage *agui.Usage) {
 	reason = agui.NormalizeFinishReason(reason)
 	text := w.Run.Text()
 	w.finishReasoning()
+	w.finishText()
 	if usage != nil {
 		w.Run.Usage = *usage
 	} else {
@@ -402,13 +425,45 @@ func (w *Writer) FinishWithUsage(reason string, usage *agui.Usage) {
 		}
 	}
 	w.Run.Status = Status{State: "complete", FinishReason: reason}
-	w.Add(w.builder.TextMessageEnd(w.Run.MessageID))
 	w.addFinalSnapshot()
 	w.Add(w.builder.RunFinished(w.Run.ThreadID, w.Run.RunID, reason, w.Run.Usage))
 }
 
+func (w *Writer) Interrupt() {
+	w.InterruptWithUsage(nil)
+}
+
+func (w *Writer) InterruptWithUsage(usage *agui.Usage) {
+	if len(w.Run.Interrupts) == 0 {
+		w.FinishWithUsage(agui.FinishReasonStop, usage)
+		return
+	}
+	text := w.Run.Text()
+	w.finishReasoning()
+	w.finishText()
+	if usage != nil {
+		w.Run.Usage = *usage
+	} else {
+		w.Run.Usage = agui.Usage{
+			PromptTokens:     1,
+			CompletionTokens: utf8.RuneCountInString(text),
+			TotalTokens:      utf8.RuneCountInString(text) + 1,
+		}
+	}
+	w.Run.Status = Status{State: "interrupted", FinishReason: agui.FinishReasonToolCalls}
+	w.addFinalSnapshot()
+	w.Add(w.builder.RunFinishedWithOutcome(
+		w.Run.ThreadID,
+		w.Run.RunID,
+		agui.FinishReasonToolCalls,
+		w.Run.Usage,
+		agui.RunFinishedOutcome{Type: agui.OutcomeInterrupt, Interrupts: append([]agui.Interrupt(nil), w.Run.Interrupts...)},
+	))
+}
+
 func (w *Writer) Error(message string) {
 	w.finishReasoning()
+	w.finishText()
 	w.Run.Status = Status{State: "error", Error: map[string]any{"message": message}}
 	w.addFinalSnapshot()
 	w.Add(w.builder.RunError(w.Run.ThreadID, w.Run.RunID, message))
@@ -416,6 +471,7 @@ func (w *Writer) Error(message string) {
 
 func (w *Writer) Abort(message string) {
 	w.finishReasoning()
+	w.finishText()
 	w.Run.Status = Status{State: "aborted", Error: map[string]any{"message": message}}
 	w.addFinalSnapshot()
 	w.Add(w.builder.RunError(w.Run.ThreadID, w.Run.RunID, message))
@@ -425,21 +481,163 @@ func (w *Writer) addFinalSnapshot() {
 	if w == nil || w.Run == nil {
 		return
 	}
-	w.MessagesSnapshot([]agui.UIMessage{w.Run.FinalUIMessage(0, true)})
+	messages := w.Run.Messages(true)
+	for i := range messages {
+		if messages[i].ID == w.Run.MessageID {
+			messages[i].Metadata = w.Run.UIMessageMetadata(true).Map()
+		}
+	}
+	w.MessagesSnapshot(messages)
 }
 
 func (w *Writer) finishReasoning() {
-	if !w.reasoningOpen {
+	w.initState()
+	if len(w.reasoningOpen) == 0 && !w.reasoningPhaseOpen {
 		return
 	}
-	w.Add(w.builder.ReasoningMessageEnd(w.Run.MessageID))
-	w.Add(w.builder.ReasoningEnd(w.Run.MessageID))
-	w.reasoningOpen = false
+	for _, index := range sortedOpenIndexes(w.reasoningOpen) {
+		w.ReasoningMessageEnd(index)
+	}
+	if w.reasoningPhaseOpen {
+		w.Add(w.builder.ReasoningEnd(w.reasoningPhaseID))
+		w.reasoningPhaseOpen = false
+	}
+}
+
+func (w *Writer) finishText() {
+	w.initState()
+	for _, index := range sortedOpenIndexes(w.textOpen) {
+		w.TextEnd(index)
+	}
+}
+
+func (w *Writer) ensureTextMessage(index int) string {
+	w.initState()
+	if messageID := w.textMessages[index]; messageID != "" {
+		if !w.textOpen[index] {
+			w.Add(w.builder.TextMessageStart(messageID, agui.RoleAssistant))
+			w.textOpen[index] = true
+		}
+		return messageID
+	}
+	messageID := w.textMessageID(index)
+	w.textMessages[index] = messageID
+	w.Add(w.builder.TextMessageStart(messageID, agui.RoleAssistant))
+	w.textOpen[index] = true
+	return messageID
+}
+
+func (w *Writer) ensureReasoningPhase() {
+	w.initState()
+	if w.reasoningPhaseID == "" {
+		w.reasoningPhaseID = "reasoning-" + w.Run.RunID
+	}
+	if !w.reasoningPhaseOpen {
+		w.Add(w.builder.ReasoningStart(w.reasoningPhaseID))
+		w.reasoningPhaseOpen = true
+	}
+}
+
+func (w *Writer) ensureReasoningMessage(index int) string {
+	w.initState()
+	if messageID := w.reasoningMessages[index]; messageID != "" {
+		if !w.reasoningOpen[index] {
+			w.Add(w.builder.ReasoningMessageStart(messageID))
+			w.reasoningOpen[index] = true
+		}
+		return messageID
+	}
+	messageID := w.reasoningMessageID(index)
+	w.reasoningMessages[index] = messageID
+	w.Add(w.builder.ReasoningMessageStart(messageID))
+	w.reasoningOpen[index] = true
+	return messageID
+}
+
+func (w *Writer) textMessageID(index int) string {
+	if index <= 0 {
+		return w.Run.MessageID
+	}
+	return fmt.Sprintf("%s-text-%d", w.Run.MessageID, index)
+}
+
+func (w *Writer) reasoningMessageID(index int) string {
+	if index < 0 {
+		index = w.nextSyntheticReasoningIdx
+		w.nextSyntheticReasoningIdx++
+	}
+	return fmt.Sprintf("%s-reasoning-%d", w.Run.MessageID, index)
+}
+
+func (w *Writer) toolResultMessageID(toolCallID string) string {
+	toolCallID = strings.TrimSpace(toolCallID)
+	if toolCallID == "" {
+		toolCallID = "result"
+	}
+	return w.Run.MessageID + "-tool-" + toolCallID
+}
+
+func (w *Writer) recordInterrupt(interrupt agui.Interrupt) {
+	if interrupt.ID == "" {
+		return
+	}
+	for i := range w.Run.Interrupts {
+		if w.Run.Interrupts[i].ID == interrupt.ID {
+			w.Run.Interrupts[i] = interrupt
+			return
+		}
+	}
+	w.Run.Interrupts = append(w.Run.Interrupts, interrupt)
+}
+
+func (w *Writer) initState() {
+	if w.textMessages == nil {
+		w.textMessages = map[int]string{}
+	}
+	if w.textOpen == nil {
+		w.textOpen = map[int]bool{}
+	}
+	if w.reasoningMessages == nil {
+		w.reasoningMessages = map[int]string{}
+	}
+	if w.reasoningOpen == nil {
+		w.reasoningOpen = map[int]bool{}
+	}
+	if w.reasoningPhaseID == "" && w.Run != nil {
+		w.reasoningPhaseID = "reasoning-" + w.Run.RunID
+	}
+}
+
+func sortedOpenIndexes(open map[int]bool) []int {
+	indexes := make([]int, 0, len(open))
+	for index, isOpen := range open {
+		if isOpen {
+			indexes = append(indexes, index)
+		}
+	}
+	sort.Ints(indexes)
+	return indexes
+}
+
+func toolResultState(result any) string {
+	value := result
+	if raw, ok := result.(string); ok {
+		value = jsonValue(raw)
+	}
+	if resultMap, ok := value.(map[string]any); ok {
+		if state, _ := resultMap["state"].(string); state == agui.ToolResultStateError {
+			return agui.ToolResultStateError
+		}
+		if status, _ := resultMap["status"].(string); status == "failed" || status == "denied" {
+			return agui.ToolResultStateError
+		}
+	}
+	return agui.ToolResultStateComplete
 }
 
 func (w *Writer) applySummary(evt agui.Event) {
 	switch evt["type"] {
-	case agui.EventTextMessageContent:
+	case agui.EventTextMessageContent, agui.EventTextMessageChunk:
 		if delta, _ := evt["delta"].(string); delta != "" {
 			w.Run.Preview = PreviewFromText(w.Run.Text(), PreviewBudgetBytes)
 		}

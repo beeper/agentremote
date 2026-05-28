@@ -12,20 +12,21 @@ func (t Run) Metadata() map[string]any {
 
 func (t Run) RunMetadata() RunMetadata {
 	return RunMetadata{
-		Schema:    "com.beeper.ai.run.v1",
-		Protocol:  "ag-ui",
-		ThreadID:  t.ThreadID,
-		RunID:     t.RunID,
-		MessageID: t.MessageID,
-		AgentID:   t.AgentID,
-		AgentName: t.AgentName,
-		Model:     t.Model,
-		Usage:     t.Usage,
-		Status:    t.Status,
-		Approvals: t.Approvals,
-		Artifacts: t.Artifacts,
-		Data:      t.Data,
-		Preview:   t.Preview,
+		Schema:     "com.beeper.ai.run.v1",
+		Protocol:   "ag-ui",
+		ThreadID:   t.ThreadID,
+		RunID:      t.RunID,
+		MessageID:  t.MessageID,
+		AgentID:    t.AgentID,
+		AgentName:  t.AgentName,
+		Model:      t.Model,
+		Usage:      t.Usage,
+		Status:     t.Status,
+		Approvals:  t.Approvals,
+		Interrupts: t.Interrupts,
+		Artifacts:  t.Artifacts,
+		Data:       t.Data,
+		Preview:    t.Preview,
 	}
 }
 

@@ -14,7 +14,10 @@ func ValidateEvent(evt Event) error {
 	case EventRunStarted:
 		return require(evt, "threadId", "runId")
 	case EventRunFinished:
-		return require(evt, "threadId", "runId")
+		if err := require(evt, "threadId", "runId"); err != nil {
+			return err
+		}
+		return validateRunFinishedOutcome(evt["outcome"])
 	case EventRunError:
 		return require(evt, "message")
 	case EventTextMessageStart:
@@ -56,11 +59,6 @@ func ValidateEvent(evt Event) error {
 		if err := require(evt, "toolCallId", "toolCallName"); err != nil {
 			return err
 		}
-		if approval, ok := evt["approval"]; ok {
-			if err := validateToolApproval(approval); err != nil {
-				return fmt.Errorf("%s has invalid approval: %w", evt["type"], err)
-			}
-		}
 		return validateStringSet(evt, "state", true, validToolStates)
 	case EventToolCallArgs:
 		if err := require(evt, "toolCallId"); err != nil {
@@ -72,20 +70,13 @@ func ValidateEvent(evt Event) error {
 		if err := validateStringSet(evt, "state", false, validToolStates); err != nil {
 			return err
 		}
-		if args, ok := evt["args"]; ok {
-			if _, ok := args.(string); !ok {
-				return fmt.Errorf("%s has invalid args %T", evt["type"], args)
-			}
-		}
 		return nil
 	case EventToolCallEnd:
 		if err := require(evt, "toolCallId"); err != nil {
 			return err
 		}
-		if result, ok := evt["result"]; ok {
-			if _, ok := result.(string); !ok {
-				return fmt.Errorf("%s has invalid result %T", evt["type"], result)
-			}
+		if _, ok := evt["result"]; ok {
+			return fmt.Errorf("%s must not include result; emit TOOL_CALL_RESULT instead", evt["type"])
 		}
 		return validateStringSet(evt, "state", true, validToolStates)
 	case EventToolCallChunk:
@@ -121,39 +112,104 @@ func ValidateEvent(evt Event) error {
 	}
 }
 
-func validateToolApproval(value any) error {
-	switch approval := value.(type) {
-	case ToolApproval:
-		if strings.TrimSpace(approval.ID) == "" {
-			return fmt.Errorf("missing id")
+func validateRunFinishedOutcome(value any) error {
+	if value == nil {
+		return nil
+	}
+	switch outcome := value.(type) {
+	case RunFinishedOutcome:
+		return validateOutcomeFields(outcome.Type, interruptsToAny(outcome.Interrupts))
+	case *RunFinishedOutcome:
+		if outcome == nil {
+			return nil
 		}
-		if !approval.NeedsApproval {
-			return fmt.Errorf("needsApproval must be true")
+		return validateRunFinishedOutcome(*outcome)
+	case map[string]any:
+		outcomeType, _ := outcome["type"].(string)
+		return validateOutcomeFields(outcomeType, outcome["interrupts"])
+	default:
+		return fmt.Errorf("RUN_FINISHED has invalid outcome %T", value)
+	}
+}
+
+func interruptsToAny(interrupts []Interrupt) []any {
+	out := make([]any, 0, len(interrupts))
+	for _, interrupt := range interrupts {
+		out = append(out, interrupt)
+	}
+	return out
+}
+
+func validateOutcomeFields(outcomeType string, interrupts any) error {
+	switch outcomeType {
+	case "":
+		return fmt.Errorf("RUN_FINISHED outcome missing type")
+	case OutcomeSuccess:
+		return nil
+	case OutcomeInterrupt:
+		return validateInterrupts(interrupts)
+	default:
+		return fmt.Errorf("RUN_FINISHED has invalid outcome type %q", outcomeType)
+	}
+}
+
+func validateInterrupts(value any) error {
+	switch interrupts := value.(type) {
+	case []Interrupt:
+		if len(interrupts) == 0 {
+			return fmt.Errorf("interrupt outcome requires interrupts")
+		}
+		for i, interrupt := range interrupts {
+			if err := validateInterrupt(interrupt.ID, interrupt.Reason, interrupt.ToolCallID); err != nil {
+				return fmt.Errorf("interrupt %d: %w", i+1, err)
+			}
 		}
 		return nil
-	case *ToolApproval:
-		if approval == nil {
-			return fmt.Errorf("missing approval")
+	case []any:
+		if len(interrupts) == 0 {
+			return fmt.Errorf("interrupt outcome requires interrupts")
 		}
-		return validateToolApproval(*approval)
-	case map[string]any:
-		id, _ := approval["id"].(string)
-		if strings.TrimSpace(id) == "" {
-			return fmt.Errorf("missing id")
-		}
-		if approval["needsApproval"] != true {
-			return fmt.Errorf("needsApproval must be true")
+		for i, raw := range interrupts {
+			switch interrupt := raw.(type) {
+			case Interrupt:
+				if err := validateInterrupt(interrupt.ID, interrupt.Reason, interrupt.ToolCallID); err != nil {
+					return fmt.Errorf("interrupt %d: %w", i+1, err)
+				}
+			case map[string]any:
+				id, _ := interrupt["id"].(string)
+				reason, _ := interrupt["reason"].(string)
+				toolCallID, _ := interrupt["toolCallId"].(string)
+				if err := validateInterrupt(id, reason, toolCallID); err != nil {
+					return fmt.Errorf("interrupt %d: %w", i+1, err)
+				}
+			default:
+				return fmt.Errorf("interrupt %d has invalid type %T", i+1, raw)
+			}
 		}
 		return nil
 	default:
-		return fmt.Errorf("unexpected %T", value)
+		return fmt.Errorf("interrupt outcome requires interrupts")
 	}
+}
+
+func validateInterrupt(id, reason, toolCallID string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("missing id")
+	}
+	if strings.TrimSpace(reason) == "" {
+		return fmt.Errorf("missing reason")
+	}
+	if reason == InterruptReasonToolCall && strings.TrimSpace(toolCallID) == "" {
+		return fmt.Errorf("tool_call interrupt missing toolCallId")
+	}
+	return nil
 }
 
 func ValidateEventSequence(events []Event) error {
 	seenRunStart := false
 	terminal := false
 	textOpen := map[string]bool{}
+	reasoningPhaseOpen := map[string]bool{}
 	reasoningOpen := map[string]bool{}
 	toolStarted := map[string]bool{}
 	toolEnded := map[string]bool{}
@@ -177,8 +233,14 @@ func ValidateEventSequence(events []Event) error {
 			if !seenRunStart {
 				return fmt.Errorf("event %d: RUN_FINISHED before RUN_STARTED", i+1)
 			}
+			if err := rejectOpenSequences(i+1, textOpen, reasoningOpen, reasoningPhaseOpen); err != nil {
+				return err
+			}
 			terminal = true
 		case EventRunError:
+			if err := rejectOpenSequences(i+1, textOpen, reasoningOpen, reasoningPhaseOpen); err != nil {
+				return err
+			}
 			terminal = true
 		case EventTextMessageStart:
 			messageID := stringField(evt, "messageId")
@@ -191,12 +253,34 @@ func ValidateEventSequence(events []Event) error {
 			if !textOpen[messageID] {
 				return fmt.Errorf("event %d: TEXT_MESSAGE_CONTENT before TEXT_MESSAGE_START for %s", i+1, messageID)
 			}
+		case EventTextMessageChunk:
+			messageID := stringField(evt, "messageId")
+			if messageID != "" {
+				if !textOpen[messageID] {
+					textOpen[messageID] = true
+				}
+				if stringField(evt, "delta") == "" {
+					delete(textOpen, messageID)
+				}
+			}
 		case EventTextMessageEnd:
 			messageID := stringField(evt, "messageId")
 			if !textOpen[messageID] {
 				return fmt.Errorf("event %d: TEXT_MESSAGE_END before TEXT_MESSAGE_START for %s", i+1, messageID)
 			}
 			delete(textOpen, messageID)
+		case EventReasoningStart:
+			messageID := stringField(evt, "messageId")
+			if reasoningPhaseOpen[messageID] {
+				return fmt.Errorf("event %d: duplicate REASONING_START for %s", i+1, messageID)
+			}
+			reasoningPhaseOpen[messageID] = true
+		case EventReasoningEnd:
+			messageID := stringField(evt, "messageId")
+			if !reasoningPhaseOpen[messageID] {
+				return fmt.Errorf("event %d: REASONING_END before REASONING_START for %s", i+1, messageID)
+			}
+			delete(reasoningPhaseOpen, messageID)
 		case EventReasoningMsgStart:
 			messageID := stringField(evt, "messageId")
 			if reasoningOpen[messageID] {
@@ -207,6 +291,16 @@ func ValidateEventSequence(events []Event) error {
 			messageID := stringField(evt, "messageId")
 			if !reasoningOpen[messageID] {
 				return fmt.Errorf("event %d: REASONING_MESSAGE_CONTENT before REASONING_MESSAGE_START for %s", i+1, messageID)
+			}
+		case EventReasoningMsgChunk:
+			messageID := stringField(evt, "messageId")
+			if messageID != "" {
+				if !reasoningOpen[messageID] {
+					reasoningOpen[messageID] = true
+				}
+				if stringField(evt, "delta") == "" {
+					delete(reasoningOpen, messageID)
+				}
 			}
 		case EventReasoningMsgEnd:
 			messageID := stringField(evt, "messageId")
@@ -244,12 +338,29 @@ func ValidateEventSequence(events []Event) error {
 	return nil
 }
 
+func rejectOpenSequences(eventNumber int, textOpen, reasoningOpen, reasoningPhaseOpen map[string]bool) error {
+	for messageID, open := range textOpen {
+		if open {
+			return fmt.Errorf("event %d: terminal run event while TEXT_MESSAGE %s is open", eventNumber, messageID)
+		}
+	}
+	for messageID, open := range reasoningOpen {
+		if open {
+			return fmt.Errorf("event %d: terminal run event while REASONING_MESSAGE %s is open", eventNumber, messageID)
+		}
+	}
+	for messageID, open := range reasoningPhaseOpen {
+		if open {
+			return fmt.Errorf("event %d: terminal run event while REASONING %s is open", eventNumber, messageID)
+		}
+	}
+	return nil
+}
+
 var validToolStates = map[string]bool{
-	ToolStateAwaitingInput:     true,
-	ToolStateInputStreaming:    true,
-	ToolStateInputComplete:     true,
-	ToolStateApprovalRequested: true,
-	ToolStateApprovalResponded: true,
+	ToolStateAwaitingInput:  true,
+	ToolStateInputStreaming: true,
+	ToolStateInputComplete:  true,
 }
 
 func stringField(evt Event, key string) string {

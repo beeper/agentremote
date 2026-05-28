@@ -1086,6 +1086,11 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
 			writer.Run.Events[len(writer.Run.Events)-1]["rawSource"] = evt.RawSource
 		}
 	}
+	annotateIfAdded := func(before int) {
+		if writer.Run != nil && len(writer.Run.Events) > before {
+			annotateLast()
+		}
+	}
 	toolCallFromEvent := func() *ai.ToolCall {
 		if evt.ToolCall != nil {
 			return evt.ToolCall
@@ -1104,12 +1109,30 @@ func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
 		return &ai.ToolCall{Type: "toolCall", ID: block.ID, Name: block.Name, Arguments: block.Arguments}
 	}
 	switch evt.Type {
+	case "text_start":
+		before := len(writer.Run.Events)
+		writer.TextStart(evt.ContentIndex)
+		annotateIfAdded(before)
 	case "text_delta":
-		writer.Text(evt.Delta)
-		annotateLast()
+		before := len(writer.Run.Events)
+		writer.TextDelta(evt.ContentIndex, evt.Delta)
+		annotateIfAdded(before)
+	case "text_end":
+		before := len(writer.Run.Events)
+		writer.TextEnd(evt.ContentIndex)
+		annotateIfAdded(before)
+	case "thinking_start":
+		before := len(writer.Run.Events)
+		writer.ReasoningMessageStart(evt.ContentIndex)
+		annotateIfAdded(before)
 	case "thinking_delta":
-		writer.Thinking(evt.Delta)
-		annotateLast()
+		before := len(writer.Run.Events)
+		writer.ReasoningDelta(evt.ContentIndex, evt.Delta)
+		annotateIfAdded(before)
+	case "thinking_end":
+		before := len(writer.Run.Events)
+		writer.ReasoningMessageEnd(evt.ContentIndex)
+		annotateIfAdded(before)
 	case "toolcall_start":
 		if toolCall := toolCallFromEvent(); toolCall != nil {
 			writer.ToolStart(toolCall.ID, toolCall.Name, evt.ContentIndex, nil)

@@ -25,7 +25,7 @@ func TestAnchorContentUsesVisibleTextAndAIProfile(t *testing.T) {
 	if content.BeeperPerMessageProfile == nil || content.BeeperPerMessageProfile.ID != "ai" || content.BeeperPerMessageProfile.Displayname != "AI" {
 		t.Fatalf("missing AI per-message profile: %#v", content.BeeperPerMessageProfile)
 	}
-	uiMessage, ok := extra[aistream.BeeperAIKey].(agui.UIMessage)
+	uiMessage, ok := extra[aistream.BeeperAIKey].(aistream.UIMessage)
 	if !ok || uiMessage.ID == "" || uiMessage.Metadata == nil || len(uiMessage.Parts) != 1 {
 		t.Fatalf("bad compact AI message: %#v", extra[aistream.BeeperAIKey])
 	}
@@ -73,7 +73,7 @@ func TestStreamingAnchorDoesNotIncludePreviewPart(t *testing.T) {
 	if content.Body != "..." {
 		t.Fatalf("empty streaming anchor should use placeholder body, got %q", content.Body)
 	}
-	uiMessage, ok := extra[aistream.BeeperAIKey].(agui.UIMessage)
+	uiMessage, ok := extra[aistream.BeeperAIKey].(aistream.UIMessage)
 	if !ok || len(uiMessage.Parts) != 0 {
 		t.Fatalf("streaming anchor should not include an initial text snapshot: %#v", extra[aistream.BeeperAIKey])
 	}
@@ -104,7 +104,7 @@ func TestFinalContentIncludesFinalUIParts(t *testing.T) {
 	if content.Body != "final **preview**" || content.Format != event.FormatHTML {
 		t.Fatalf("bad final preview content: %#v", content)
 	}
-	uiMessage, ok := extra[aistream.BeeperAIKey].(agui.UIMessage)
+	uiMessage, ok := extra[aistream.BeeperAIKey].(aistream.UIMessage)
 	if !ok || len(uiMessage.Parts) != 2 || uiMessage.Parts[0]["type"] != "thinking" || uiMessage.Parts[1]["type"] != "text" {
 		t.Fatalf("final edit must include concrete UI parts: %#v", extra[aistream.BeeperAIKey])
 	}
@@ -129,7 +129,7 @@ func TestFinalContentDoesNotTruncateUIParts(t *testing.T) {
 	expected := run.Text()
 
 	_, extra := FinalContent(*run)
-	uiMessage, ok := extra[aistream.BeeperAIKey].(agui.UIMessage)
+	uiMessage, ok := extra[aistream.BeeperAIKey].(aistream.UIMessage)
 	if !ok || len(uiMessage.Parts) == 0 {
 		t.Fatalf("missing final UI message: %#v", extra[aistream.BeeperAIKey])
 	}
