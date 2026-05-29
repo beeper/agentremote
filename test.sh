@@ -1,3 +1,6 @@
 #!/bin/sh
 set -e
-go test -tags=goolm "$@" ./...
+if [ "$#" -eq 0 ]; then
+	set -- ./...
+fi
+go test -tags=goolm "$@"

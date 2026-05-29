@@ -1,3 +1,3 @@
 #!/bin/sh
 set -e
-go run -tags=goolm ./cmd/mautrix-ai "$@"
+go run -tags=goolm ./cmd/ai "$@"

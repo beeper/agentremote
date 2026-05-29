@@ -15,9 +15,9 @@ var (
 var aiConnector = &connector.Connector{}
 
 var m = mxmain.BridgeMain{
-	Name:        "mautrix-ai",
+	Name:        "ai",
 	URL:         "https://github.com/beeper/ai-bridge",
-	Description: "A Matrix-AI bridge.",
+	Description: "A Beeper AI bridge.",
 	Version:     "0.1.0",
 	Connector:   aiConnector,
 }

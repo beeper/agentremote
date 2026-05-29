@@ -1,3 +1,3 @@
 #!/bin/sh
 set -e
-./build-go.sh "$@"
+go build -tags=goolm -o ./ai "$@" ./cmd/ai
