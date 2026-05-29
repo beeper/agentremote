@@ -2,6 +2,8 @@ package connector
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -11,6 +13,13 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 )
+
+const aiServicesAppserviceTokenPrefix = "as::"
+
+type aiServicesAppserviceToken struct {
+	ASToken  string `json:"as_token"`
+	Username string `json:"username"`
+}
 
 func (c *Connector) ModelForProvider(provider aiid.ProviderConfig, modelID string) ai.Model {
 	for _, model := range provider.Models {
@@ -132,7 +141,10 @@ func (cl *Client) authForProvider(provider aiid.ProviderConfig) func(context.Con
 		}
 		apiKey := resolveConfiguredAPIKey(provider.APIKey)
 		if provider.ID == aiid.DefaultProvider {
-			apiKey = cl.Main.AppServiceToken
+			apiKey, err = cl.defaultProviderBearerToken()
+			if err != nil {
+				return nil, err
+			}
 		}
 		if apiKey == "" {
 			return nil, fmt.Errorf("missing API key for provider %s", provider.ID)
@@ -142,6 +154,36 @@ func (cl *Client) authForProvider(provider aiid.ProviderConfig) func(context.Con
 			Headers: provider.Headers,
 		}, nil
 	}
+}
+
+func (cl *Client) defaultProviderBearerToken() (string, error) {
+	if cl == nil || cl.Main == nil {
+		return "", fmt.Errorf("missing connector for default provider")
+	}
+	if cl.Main.AppServiceToken == "" {
+		return "", fmt.Errorf("missing appservice token for default provider")
+	}
+	username := usernameFromHomeserverAddress(cl.Main.HomeserverAddress)
+	if username == "" {
+		return "", fmt.Errorf("missing hungryserv username in homeserver address for default provider")
+	}
+	payload, err := json.Marshal(aiServicesAppserviceToken{
+		ASToken:  cl.Main.AppServiceToken,
+		Username: username,
+	})
+	if err != nil {
+		return "", err
+	}
+	return aiServicesAppserviceTokenPrefix + base64.RawURLEncoding.EncodeToString(payload), nil
+}
+
+func usernameFromHomeserverAddress(address string) string {
+	_, username, ok := strings.Cut(strings.TrimSpace(address), "/_hungryserv/")
+	if !ok {
+		return ""
+	}
+	username, _, _ = strings.Cut(username, "/")
+	return username
 }
 
 func (cl *Client) refreshProviderIfNeeded(ctx context.Context, provider aiid.ProviderConfig) (aiid.ProviderConfig, error) {

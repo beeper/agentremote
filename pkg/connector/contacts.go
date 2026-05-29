@@ -153,7 +153,11 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+cl.Main.AppServiceToken)
+	token, err := cl.defaultProviderBearerToken()
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

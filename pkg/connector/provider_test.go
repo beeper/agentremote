@@ -2,14 +2,18 @@ package connector
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
+	"maunium.net/go/mautrix/bridgev2/bridgeconfig"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
 )
@@ -35,13 +39,49 @@ func TestModelForProviderConstructsCustomModel(t *testing.T) {
 }
 
 func TestDefaultProviderAuthUsesAppServiceToken(t *testing.T) {
-	client := &Client{Main: &Connector{AppServiceToken: "as-token"}}
+	client := &Client{
+		Main: &Connector{
+			AppServiceToken:   "as-token",
+			HomeserverAddress: "https://matrix.beeper-staging.com/_hungryserv/qatest9033045029",
+		},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			UserMXID: "@alice:beeper-staging.com",
+		}},
+	}
 	auth, err := client.authForProvider(aiid.ProviderConfig{ID: aiid.DefaultProvider})(context.Background(), ai.Model{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if auth.APIKey != "as-token" {
-		t.Fatalf("expected appservice token, got %q", auth.APIKey)
+	payload, ok := strings.CutPrefix(auth.APIKey, aiServicesAppserviceTokenPrefix)
+	if !ok {
+		t.Fatalf("expected appservice bearer token, got %q", auth.APIKey)
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var token aiServicesAppserviceToken
+	if err = json.Unmarshal(decoded, &token); err != nil {
+		t.Fatal(err)
+	}
+	if token.ASToken != "as-token" || token.Username != "qatest9033045029" {
+		t.Fatalf("unexpected appservice token %#v", token)
+	}
+	if len(auth.Headers) != 0 {
+		t.Fatalf("expected no extra headers, got %#v", auth.Headers)
+	}
+}
+
+func TestDefaultProviderAuthRequiresHungryservUsername(t *testing.T) {
+	client := &Client{
+		Main: &Connector{
+			AppServiceToken:   "as-token",
+			HomeserverAddress: "https://matrix.beeper-staging.com",
+		},
+	}
+	_, err := client.authForProvider(aiid.ProviderConfig{ID: aiid.DefaultProvider})(context.Background(), ai.Model{})
+	if err == nil || !strings.Contains(err.Error(), "hungryserv username") {
+		t.Fatalf("expected hungryserv username error, got %v", err)
 	}
 }
 
@@ -77,6 +117,15 @@ func TestDefaultAIServicesProxyBaseURLFollowsHomeserverAddress(t *testing.T) {
 	}
 }
 
+func TestUsernameFromHomeserverAddress(t *testing.T) {
+	if got := usernameFromHomeserverAddress("https://matrix.beeper-staging.com/_hungryserv/qatest9033045029"); got != "qatest9033045029" {
+		t.Fatalf("unexpected username %q", got)
+	}
+	if got := usernameFromHomeserverAddress("https://matrix.beeper-staging.com"); got != "" {
+		t.Fatalf("expected no username, got %q", got)
+	}
+}
+
 func TestDefaultProviderBaseURLUsesConnectorHomeserverAddress(t *testing.T) {
 	conn := &Connector{
 		HomeserverAddress: "https://matrix.beeper-staging.com/_hungryserv/test",
@@ -84,6 +133,26 @@ func TestDefaultProviderBaseURLUsesConnectorHomeserverAddress(t *testing.T) {
 	provider := conn.defaultProviderConfig()
 	if provider.BaseURL != "https://ai-services.beeper-staging.com/proxy/_/v1" {
 		t.Fatalf("unexpected provider base URL %q", provider.BaseURL)
+	}
+}
+
+func TestConfiguredLoginUserMXIDsUsesExplicitLoginPermissions(t *testing.T) {
+	admin := bridgeconfig.PermissionLevelAdmin
+	user := bridgeconfig.PermissionLevelUser
+	commands := bridgeconfig.PermissionLevelCommands
+	conn := &Connector{Bridge: &bridgev2.Bridge{Config: &bridgeconfig.BridgeConfig{
+		Permissions: bridgeconfig.PermissionConfig{
+			"@admin:example.com":    &admin,
+			"@commands:example.com": &commands,
+			"@user:example.com":     &user,
+			"example.com":           &admin,
+			"*":                     &admin,
+		},
+	}}}
+
+	mxids := conn.configuredLoginUserMXIDs()
+	if len(mxids) != 2 || mxids[0] != "@admin:example.com" || mxids[1] != "@user:example.com" {
+		t.Fatalf("unexpected configured login users %#v", mxids)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
@@ -62,6 +63,9 @@ func (c *Connector) Start(ctx context.Context) error {
 	}
 	if err := c.Store.Upgrade(ctx); err != nil {
 		return bridgev2.DBUpgradeError{Err: err, Section: "ai"}
+	}
+	if err := c.ensureDefaultLoginsForConfiguredUsers(ctx); err != nil {
+		return err
 	}
 	return c.ensureDefaultLoginsForExistingUsers(ctx)
 }
@@ -140,6 +144,40 @@ func (c *Connector) defaultLoginID(mxid id.UserID) networkid.UserLoginID {
 		}
 	}
 	return aiid.DefaultLoginID(mxid)
+}
+
+func (c *Connector) configuredLoginUserMXIDs() []id.UserID {
+	if c == nil || c.Bridge == nil || c.Bridge.Config == nil {
+		return nil
+	}
+	mxids := make([]id.UserID, 0, len(c.Bridge.Config.Permissions))
+	for rawMXID, permissions := range c.Bridge.Config.Permissions {
+		if permissions == nil || !permissions.Login || !strings.HasPrefix(rawMXID, "@") {
+			continue
+		}
+		mxid := id.UserID(rawMXID)
+		if _, _, err := mxid.Parse(); err != nil {
+			continue
+		}
+		mxids = append(mxids, mxid)
+	}
+	sort.Slice(mxids, func(i, j int) bool {
+		return mxids[i] < mxids[j]
+	})
+	return mxids
+}
+
+func (c *Connector) ensureDefaultLoginsForConfiguredUsers(ctx context.Context) error {
+	for _, mxid := range c.configuredLoginUserMXIDs() {
+		user, err := c.Bridge.GetUserByMXID(ctx, mxid)
+		if err != nil {
+			return fmt.Errorf("load configured user %s: %w", mxid, err)
+		}
+		if _, err = c.EnsureDefaultLogin(ctx, user); err != nil {
+			return fmt.Errorf("ensure default login for configured user %s: %w", mxid, err)
+		}
+	}
+	return nil
 }
 
 func (c *Connector) ensureDefaultLoginsForExistingUsers(ctx context.Context) error {

@@ -55,7 +55,15 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &Client{Main: &Connector{AppServiceToken: "as-token"}}
+	client := &Client{
+		Main: &Connector{
+			AppServiceToken:   "as-token",
+			HomeserverAddress: "https://matrix.beeper-staging.com/_hungryserv/test",
+		},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			UserMXID: "@alice:beeper-staging.com",
+		}},
+	}
 	models, err := client.aiServicesCatalogModels(context.Background(), aiid.ProviderConfig{
 		ID:       aiid.DefaultProvider,
 		Provider: ai.ProviderOpenAI,
@@ -65,7 +73,7 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if gotAuth != "Bearer as-token" {
+	if !strings.HasPrefix(gotAuth, "Bearer "+aiServicesAppserviceTokenPrefix) {
 		t.Fatalf("unexpected auth header %q", gotAuth)
 	}
 	if len(models) != 2 || models[0].ID != "gpt-5.5" || models[0].BaseURL != server.URL+"/proxy/_/v1" {
