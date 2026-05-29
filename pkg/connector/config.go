@@ -2,10 +2,9 @@ package connector
 
 import (
 	_ "embed"
+	"net/url"
 	"strings"
 
-	ai "github.com/beeper/ai-bridge/pkg/ai"
-	"github.com/beeper/ai-bridge/pkg/aiid"
 	up "go.mau.fi/util/configupgrade"
 	"gopkg.in/yaml.v3"
 )
@@ -14,24 +13,13 @@ import (
 var ExampleConfig string
 
 const defaultAIServicesProxyPrefix = "https://ai-services."
+const defaultBeeperAIModel = "gpt-5.5"
 
 type Config struct {
-	DefaultProvider       DefaultProviderConfig          `yaml:"default_provider"`
-	Providers             map[string]aiid.ProviderConfig `yaml:"providers"`
-	DefaultSystemPrompt   string                         `yaml:"default_system_prompt"`
-	DefaultReasoningLevel string                         `yaml:"default_reasoning_level"`
-	Fetch                 FetchConfig                    `yaml:"fetch"`
-	Search                SearchConfig                   `yaml:"search"`
-	StreamType            string                         `yaml:"stream_type"`
-}
-
-type DefaultProviderConfig struct {
-	BaseURL       string      `yaml:"base_url"`
-	Provider      ai.Provider `yaml:"provider"`
-	API           ai.Api      `yaml:"api"`
-	DefaultModel  string      `yaml:"default_model"`
-	AllowedModels []string    `yaml:"allowed_models"`
-	Models        []ai.Model  `yaml:"models"`
+	DefaultSystemPrompt   string       `yaml:"default_system_prompt"`
+	DefaultReasoningLevel string       `yaml:"default_reasoning_level"`
+	Fetch                 FetchConfig  `yaml:"fetch"`
+	Search                SearchConfig `yaml:"search"`
 }
 
 type FetchConfig struct {
@@ -57,9 +45,6 @@ func (c *Config) UnmarshalYAML(node *yaml.Node) error {
 }
 
 func (c *Config) ApplyDefaults() {
-	if c.StreamType == "" {
-		c.StreamType = aiid.StreamType
-	}
 	if c.DefaultSystemPrompt == "" {
 		c.DefaultSystemPrompt = "You are a helpful assistant inside Beeper."
 	}
@@ -75,67 +60,37 @@ func (c *Config) ApplyDefaults() {
 	if c.Fetch.MaxChars == 0 {
 		c.Fetch.MaxChars = 20000
 	}
-	if c.DefaultProvider.Provider == "" {
-		c.DefaultProvider.Provider = ai.ProviderOpenAI
-	}
-	if c.DefaultProvider.API == "" {
-		c.DefaultProvider.API = ai.ApiOpenAIResponses
-	}
-	if c.DefaultProvider.DefaultModel == "" {
-		c.DefaultProvider.DefaultModel = "gpt-5.5"
-	}
-	for i := range c.DefaultProvider.Models {
-		c.DefaultProvider.Models[i] = normalizeDefaultModel(c.DefaultProvider.Models[i], c.DefaultProvider.BaseURL)
-	}
-}
-
-func normalizeDefaultModel(model ai.Model, baseURL string) ai.Model {
-	if model.API == "" {
-		model.API = ai.ApiOpenAIResponses
-	}
-	if model.Provider == "" {
-		model.Provider = ai.ProviderOpenAI
-	}
-	if model.BaseURL == "" {
-		model.BaseURL = normalizeResponsesBaseURL(baseURL)
-	}
-	if model.Name == "" {
-		model.Name = model.ID
-	}
-	if len(model.Input) == 0 {
-		model.Input = []string{"text"}
-	}
-	return model
 }
 
 func normalizeResponsesBaseURL(baseURL string) string {
 	return strings.TrimSuffix(baseURL, "/responses")
 }
 
-func defaultAIServicesProxyBaseURL(homeserverDomain string) string {
-	return defaultAIServicesProxyPrefix + normalizeHomeserverDomain(homeserverDomain) + "/proxy/_/v1"
+func defaultAIServicesProxyBaseURL(homeserverAddress string) string {
+	domain := normalizeHomeserverAddress(homeserverAddress)
+	if domain == "" {
+		return ""
+	}
+	return defaultAIServicesProxyPrefix + domain + "/proxy/_/v1"
 }
 
-func normalizeHomeserverDomain(value string) string {
+func normalizeHomeserverAddress(value string) string {
 	value = strings.TrimSpace(value)
+	if parsed, err := url.Parse(value); err == nil && parsed.Host != "" {
+		value = parsed.Host
+	}
 	value = strings.TrimPrefix(value, "https://")
 	value = strings.TrimPrefix(value, "http://")
 	value = strings.Trim(value, "/")
 	value = strings.TrimPrefix(value, "matrix.")
-	if value == "" {
-		return "beeper.com"
-	}
 	return value
 }
 
 func upgradeConfig(helper up.Helper) {
-	helper.Copy(up.Map, "default_provider")
-	helper.Copy(up.Map, "providers")
 	helper.Copy(up.Str, "default_system_prompt")
 	helper.Copy(up.Str, "default_reasoning_level")
 	helper.Copy(up.Map, "fetch")
 	helper.Copy(up.Map, "search")
-	helper.Copy(up.Str, "stream_type")
 }
 
 func (c *Connector) GetConfig() (string, any, up.Upgrader) {

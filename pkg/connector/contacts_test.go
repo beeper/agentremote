@@ -123,47 +123,8 @@ func TestSearchUsersFiltersModelContacts(t *testing.T) {
 	}
 }
 
-func TestContactListIncludesEnabledConfiguredProviders(t *testing.T) {
-	conn := &Connector{Config: Config{
-		DefaultProvider: DefaultProviderConfig{
-			BaseURL:       defaultAIServicesProxyBaseURL("beeper.com"),
-			Provider:      ai.ProviderOpenAI,
-			API:           ai.ApiOpenAIResponses,
-			DefaultModel:  "gpt-5.5",
-			AllowedModels: []string{"gpt-5.5"},
-		},
-		Providers: map[string]aiid.ProviderConfig{
-			"openai": {
-				ID:            "openai",
-				DisplayName:   "OpenAI",
-				Provider:      ai.ProviderOpenAI,
-				API:           ai.ApiOpenAIResponses,
-				BaseURL:       "https://api.openai.com/v1",
-				DefaultModel:  "gpt-5.5",
-				AllowedModels: []string{"gpt-5.5"},
-				Enabled:       true,
-			},
-			"openrouter": {
-				ID:            "openrouter",
-				DisplayName:   "OpenRouter",
-				Provider:      ai.ProviderOpenRouter,
-				API:           ai.ApiOpenAICompletions,
-				BaseURL:       "https://openrouter.ai/api/v1",
-				DefaultModel:  "anthropic/claude-sonnet-4.5",
-				AllowedModels: []string{"anthropic/claude-sonnet-4.5"},
-				Enabled:       true,
-			},
-			"disabled": {
-				ID:            "disabled",
-				DisplayName:   "Disabled",
-				Provider:      ai.ProviderOpenAI,
-				API:           ai.ApiOpenAIResponses,
-				DefaultModel:  "gpt-5",
-				AllowedModels: []string{"gpt-5"},
-				Enabled:       false,
-			},
-		},
-	}}
+func TestContactListIncludesEnabledLoginProviders(t *testing.T) {
+	conn := &Connector{HomeserverAddress: "https://matrix.beeper-staging.com/_hungryserv/test"}
 	client := &Client{
 		Main: conn,
 		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
@@ -171,6 +132,16 @@ func TestContactListIncludesEnabledConfiguredProviders(t *testing.T) {
 			Metadata: &aiid.UserLoginMetadata{
 				SyntheticDefault: true,
 				Providers: map[string]aiid.ProviderConfig{
+					"openrouter": {
+						ID:            "openrouter",
+						DisplayName:   "OpenRouter",
+						Provider:      ai.ProviderOpenRouter,
+						API:           ai.ApiOpenAICompletions,
+						BaseURL:       "https://openrouter.ai/api/v1",
+						DefaultModel:  "anthropic/claude-sonnet-4.5",
+						AllowedModels: []string{"anthropic/claude-sonnet-4.5"},
+						Enabled:       true,
+					},
 					"custom": {
 						ID:            "custom",
 						DisplayName:   "Custom",
@@ -180,6 +151,15 @@ func TestContactListIncludesEnabledConfiguredProviders(t *testing.T) {
 						DefaultModel:  "custom-model",
 						AllowedModels: []string{"custom-model"},
 						Enabled:       true,
+					},
+					"disabled": {
+						ID:            "disabled",
+						DisplayName:   "Disabled",
+						Provider:      ai.ProviderOpenAI,
+						API:           ai.ApiOpenAIResponses,
+						DefaultModel:  "gpt-5",
+						AllowedModels: []string{"gpt-5"},
+						Enabled:       false,
 					},
 				},
 			},
@@ -198,7 +178,6 @@ func TestContactListIncludesEnabledConfiguredProviders(t *testing.T) {
 	}
 	for _, want := range []string{
 		"beeper/gpt-5.5",
-		"openai/gpt-5.5",
 		"openrouter/anthropic/claude-sonnet-4.5",
 		"custom/custom-model",
 	} {

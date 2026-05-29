@@ -54,8 +54,7 @@ func (l *ChatGPTDeviceLogin) Start(ctx context.Context) (*bridgev2.LoginStep, er
 		StepID:       chatGPTDeviceLoginStepID,
 		Instructions: fmt.Sprintf("Open %s and enter code %s.", chatGPTDeviceVerificationURI, device.UserCode),
 		DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{
-			Type: bridgev2.LoginDisplayTypeCode,
-			Data: device.UserCode,
+			Type: bridgev2.LoginDisplayTypeNothing,
 		},
 	}, nil
 }

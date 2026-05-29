@@ -27,11 +27,11 @@ func (cl *Client) SearchUsers(ctx context.Context, query string) ([]*bridgev2.Re
 }
 
 func (cl *Client) ResolveIdentifier(ctx context.Context, identifier string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
-	provider, model, ok := cl.resolveModelIdentifier(identifier)
+	provider, model, ok := cl.resolveModelIdentifier(ctx, identifier)
 	if !ok {
 		return nil, fmt.Errorf("unknown AI model %s", identifier)
 	}
-	resp := cl.modelContact(provider, model)
+	resp := cl.modelContact(ctx, provider, model)
 	if createChat {
 		chat, err := cl.createModelChat(ctx, provider, model)
 		if err != nil {
@@ -105,26 +105,38 @@ func (cl *Client) modelContacts(ctx context.Context, query string) []*bridgev2.R
 		if !provider.Enabled {
 			continue
 		}
-		if models, err := cl.aiServicesCatalogModels(ctx, provider); err == nil && len(models) > 0 {
-			provider.Models = models
-		}
-		contacts = append(contacts, providerModelContacts(provider, query)...)
+		provider = cl.providerWithCatalogModels(ctx, provider)
+		contacts = append(contacts, providerModelContacts(ctx, cl.bridge(), provider, query)...)
 	}
 	return contacts
 }
 
-func (cl *Client) modelContact(provider aiid.ProviderConfig, model ai.Model) *bridgev2.ResolveIdentifierResponse {
-	return modelContact(provider, model)
+func (cl *Client) modelContact(ctx context.Context, provider aiid.ProviderConfig, model ai.Model) *bridgev2.ResolveIdentifierResponse {
+	return modelContactWithGhost(ctx, cl.bridge(), provider, model)
 }
 
-func providerModelContacts(provider aiid.ProviderConfig, query string) []*bridgev2.ResolveIdentifierResponse {
+func (cl *Client) providerWithCatalogModels(ctx context.Context, provider aiid.ProviderConfig) aiid.ProviderConfig {
+	if models, err := cl.aiServicesCatalogModels(ctx, provider); err == nil && len(models) > 0 {
+		provider.Models = models
+	}
+	return provider
+}
+
+func (cl *Client) bridge() *bridgev2.Bridge {
+	if cl == nil || cl.Main == nil {
+		return nil
+	}
+	return cl.Main.Bridge
+}
+
+func providerModelContacts(ctx context.Context, br *bridgev2.Bridge, provider aiid.ProviderConfig, query string) []*bridgev2.ResolveIdentifierResponse {
 	contacts := []*bridgev2.ResolveIdentifierResponse{}
 	for _, model := range contactModels(provider) {
 		name := strings.ToLower(modelDisplayName(provider, model))
 		if query != "" && !strings.Contains(name, query) && !strings.Contains(strings.ToLower(model.ID), query) && !strings.Contains(strings.ToLower(provider.ID), query) {
 			continue
 		}
-		contacts = append(contacts, modelContact(provider, model))
+		contacts = append(contacts, modelContactWithGhost(ctx, br, provider, model))
 	}
 	return contacts
 }
@@ -222,6 +234,16 @@ func modelContact(provider aiid.ProviderConfig, model ai.Model) *bridgev2.Resolv
 	}
 }
 
+func modelContactWithGhost(ctx context.Context, br *bridgev2.Bridge, provider aiid.ProviderConfig, model ai.Model) *bridgev2.ResolveIdentifierResponse {
+	resp := modelContact(provider, model)
+	if br != nil {
+		if ghost, err := br.GetGhostByID(ctx, resp.UserID); err == nil {
+			resp.Ghost = ghost
+		}
+	}
+	return resp
+}
+
 func resolveModelForProvider(provider aiid.ProviderConfig, identifier string) (ai.Model, bool) {
 	if providerID, modelID, ok := aiid.ParseModelContactID(aiidNetworkID(identifier)); ok {
 		identifier = providerID + "/" + modelID
@@ -234,7 +256,7 @@ func resolveModelForProvider(provider aiid.ProviderConfig, identifier string) (a
 	return ai.Model{}, false
 }
 
-func (cl *Client) resolveModelIdentifier(identifier string) (aiid.ProviderConfig, ai.Model, bool) {
+func (cl *Client) resolveModelIdentifier(ctx context.Context, identifier string) (aiid.ProviderConfig, ai.Model, bool) {
 	meta := cl.loginMetadata()
 	if meta == nil {
 		return aiid.ProviderConfig{}, ai.Model{}, false
@@ -246,6 +268,7 @@ func (cl *Client) resolveModelIdentifier(identifier string) (aiid.ProviderConfig
 		if !provider.Enabled {
 			continue
 		}
+		provider = cl.providerWithCatalogModels(ctx, provider)
 		if model, ok := resolveModelForProvider(provider, identifier); ok {
 			return provider, model, true
 		}
@@ -266,7 +289,7 @@ func (cl *Client) loginMetadata() *aiid.UserLoginMetadata {
 		return nil
 	}
 	if cl.Main != nil {
-		ensureMetadataDefaults(meta, cl.Main.defaultProviderConfig(), cl.Main.configuredProviders())
+		ensureMetadataDefaults(meta, cl.Main.defaultProviderConfig())
 	}
 	return meta
 }

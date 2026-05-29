@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,14 +17,18 @@ import (
 
 func TestGetLoginFlowsIncludesChatGPTDeviceLogin(t *testing.T) {
 	conn := &Connector{}
+	flows := conn.GetLoginFlows()
+	if len(flows) == 0 || flows[0].ID != loginFlowDefaultProvider {
+		t.Fatalf("expected default Beeper AI login flow first, got %#v", flows)
+	}
 	found := false
-	for _, flow := range conn.GetLoginFlows() {
+	for _, flow := range flows {
 		if flow.ID == loginFlowChatGPTDevice {
 			found = flow.Name == "ChatGPT"
 		}
 	}
 	if !found {
-		t.Fatalf("expected ChatGPT device login flow in %#v", conn.GetLoginFlows())
+		t.Fatalf("expected ChatGPT device login flow in %#v", flows)
 	}
 	process, err := conn.CreateLogin(t.Context(), &bridgev2.User{}, loginFlowChatGPTDevice)
 	if err != nil {
@@ -60,8 +65,11 @@ func TestChatGPTDeviceLoginStartReturnsCodeStep(t *testing.T) {
 	if step.Type != bridgev2.LoginStepTypeDisplayAndWait || step.StepID != chatGPTDeviceLoginStepID {
 		t.Fatalf("unexpected step %#v", step)
 	}
-	if step.DisplayAndWaitParams == nil || step.DisplayAndWaitParams.Type != bridgev2.LoginDisplayTypeCode || step.DisplayAndWaitParams.Data != "ABCD-EFGH" {
+	if step.DisplayAndWaitParams == nil || step.DisplayAndWaitParams.Type != bridgev2.LoginDisplayTypeNothing || step.DisplayAndWaitParams.Data != "" {
 		t.Fatalf("unexpected display params %#v", step.DisplayAndWaitParams)
+	}
+	if !strings.Contains(step.Instructions, "ABCD-EFGH") || !strings.Contains(step.Instructions, "/codex/device") {
+		t.Fatalf("expected instructions to include device URL and code, got %q", step.Instructions)
 	}
 	if login.device.DeviceAuthID != "device-1" || login.device.Interval != 0 {
 		t.Fatalf("device state was not retained: %#v", login.device)

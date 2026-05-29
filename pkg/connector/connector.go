@@ -11,7 +11,6 @@ import (
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"go.mau.fi/util/dbutil"
 	"maunium.net/go/mautrix/bridgev2"
-	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
@@ -19,11 +18,11 @@ import (
 )
 
 type Connector struct {
-	Bridge           *bridgev2.Bridge
-	Config           Config
-	Store            *aidb.Store
-	AppServiceToken  string
-	HomeserverDomain string
+	Bridge            *bridgev2.Bridge
+	Config            Config
+	Store             *aidb.Store
+	AppServiceToken   string
+	HomeserverAddress string
 }
 
 var _ bridgev2.NetworkConnector = (*Connector)(nil)
@@ -46,9 +45,6 @@ func (c *Connector) Init(bridge *bridgev2.Bridge) {
 	c.Config.ApplyDefaults()
 	c.Bridge = bridge
 	c.Store = aidb.NewStore(bridge.DB.Database, dbutil.ZeroLogger(bridge.Log.With().Str("db_section", "ai").Logger()))
-	if processor, ok := bridge.Commands.(*commands.Processor); ok {
-		processor.AddHandler(c.commandAddProvider())
-	}
 }
 
 func configureBridgeV2MessageStatuses() {
@@ -85,7 +81,7 @@ func (c *Connector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin
 		}
 		return nil
 	}
-	ensureMetadataDefaults(meta, c.defaultProviderConfig(), c.configuredProviders())
+	ensureMetadataDefaults(meta, c.defaultProviderConfig())
 	login.Client = &Client{
 		Main:      c,
 		UserLogin: login,
@@ -99,96 +95,35 @@ func (c *Connector) GetBridgeInfoVersion() (info, capabilities int) {
 }
 
 func (c *Connector) defaultProviderConfig() aiid.ProviderConfig {
-	config := c.Config
-	config.ApplyDefaults()
-	baseURL := config.DefaultProvider.BaseURL
-	if baseURL == "" {
-		baseURL = c.defaultAIServicesProxyBaseURL()
-	}
-	models := make([]ai.Model, 0, len(config.DefaultProvider.Models))
-	for _, model := range config.DefaultProvider.Models {
-		models = append(models, normalizeDefaultModel(model, baseURL))
-	}
+	baseURL := c.defaultAIServicesProxyBaseURL()
 	return aiid.ProviderConfig{
-		ID:            aiid.DefaultProvider,
-		DisplayName:   "Beeper AI",
-		API:           config.DefaultProvider.API,
-		Provider:      config.DefaultProvider.Provider,
-		BaseURL:       normalizeResponsesBaseURL(baseURL),
-		DefaultModel:  defaultDefaultModelID(config.DefaultProvider.DefaultModel, config.DefaultProvider.AllowedModels, models),
-		AllowedModels: append([]string{}, config.DefaultProvider.AllowedModels...),
-		Models:        models,
-		Enabled:       true,
+		ID:           aiid.DefaultProvider,
+		DisplayName:  "Beeper AI",
+		API:          ai.ApiOpenAIResponses,
+		Provider:     ai.ProviderOpenAI,
+		BaseURL:      normalizeResponsesBaseURL(baseURL),
+		DefaultModel: defaultBeeperAIModel,
+		Enabled:      true,
 	}
 }
 
 func (c *Connector) defaultAIServicesProxyBaseURL() string {
-	domain := "beeper.com"
-	if c != nil && c.HomeserverDomain != "" {
-		domain = c.HomeserverDomain
+	address := ""
+	if c != nil {
+		address = c.HomeserverAddress
 	}
-	return defaultAIServicesProxyBaseURL(domain)
+	return defaultAIServicesProxyBaseURL(address)
 }
 
-func (c *Connector) configuredProviders() map[string]aiid.ProviderConfig {
-	config := c.Config
-	config.ApplyDefaults()
-	providers := map[string]aiid.ProviderConfig{
-		aiid.DefaultProvider: c.defaultProviderConfig(),
-	}
-	for id, provider := range config.Providers {
-		provider = normalizeConfiguredProvider(id, provider)
-		providers[provider.ID] = provider
-	}
-	return providers
-}
-
-func normalizeConfiguredProvider(id string, provider aiid.ProviderConfig) aiid.ProviderConfig {
-	if provider.ID == "" {
-		provider.ID = id
-	}
-	if provider.DisplayName == "" {
-		provider.DisplayName = provider.ID
-	}
-	if provider.Provider == "" {
-		provider.Provider = ai.Provider(provider.ID)
-	}
-	if provider.API == "" {
-		switch provider.Provider {
-		case ai.ProviderOpenRouter:
-			provider.API = ai.ApiOpenAICompletions
-		default:
-			provider.API = ai.ApiOpenAIResponses
-		}
-	}
-	provider.BaseURL = normalizeResponsesBaseURL(provider.BaseURL)
-	if provider.DefaultModel == "" {
-		if len(provider.AllowedModels) > 0 {
-			provider.DefaultModel = provider.AllowedModels[0]
-		} else if len(provider.Models) > 0 {
-			provider.DefaultModel = provider.Models[0].ID
-		}
-	}
-	for i := range provider.Models {
-		provider.Models[i] = normalizeProviderModel(provider.Models[i], provider)
-	}
-	return provider
-}
-
-func ensureMetadataDefaults(meta *aiid.UserLoginMetadata, defaultProvider aiid.ProviderConfig, configuredProviders ...map[string]aiid.ProviderConfig) {
+func ensureMetadataDefaults(meta *aiid.UserLoginMetadata, defaultProvider aiid.ProviderConfig) {
 	if meta.Kind == "" {
 		meta.Kind = aiid.LoginKindMain
 	}
 	if meta.Providers == nil {
 		meta.Providers = map[string]aiid.ProviderConfig{}
 	}
-	if _, ok := meta.Providers[defaultProvider.ID]; !ok && meta.SyntheticDefault {
+	if meta.SyntheticDefault {
 		meta.Providers[defaultProvider.ID] = defaultProvider
-	}
-	if len(configuredProviders) > 0 {
-		for id, provider := range configuredProviders[0] {
-			meta.Providers[id] = provider
-		}
 	}
 	if meta.DefaultProviderID == "" {
 		meta.DefaultProviderID = defaultProvider.ID
@@ -196,23 +131,6 @@ func ensureMetadataDefaults(meta *aiid.UserLoginMetadata, defaultProvider aiid.P
 	if meta.DefaultModelID == "" {
 		meta.DefaultModelID = defaultProvider.DefaultModel
 	}
-}
-
-func defaultModelID(models []ai.Model) string {
-	if len(models) == 0 {
-		return "gpt-5"
-	}
-	return models[0].ID
-}
-
-func defaultDefaultModelID(configured string, allowed []string, models []ai.Model) string {
-	if configured != "" {
-		return configured
-	}
-	if len(allowed) > 0 {
-		return allowed[0]
-	}
-	return defaultModelID(models)
 }
 
 func (c *Connector) defaultLoginID(mxid id.UserID) networkid.UserLoginID {
@@ -257,12 +175,12 @@ func (c *Connector) EnsureDefaultLogin(ctx context.Context, user *bridgev2.User)
 	if cached := c.Bridge.GetCachedUserLoginByID(loginID); cached != nil {
 		if meta, ok := cached.Metadata.(*aiid.UserLoginMetadata); ok {
 			meta.SyntheticDefault = true
-			ensureMetadataDefaults(meta, c.defaultProviderConfig(), c.configuredProviders())
+			ensureMetadataDefaults(meta, c.defaultProviderConfig())
 		}
 		return cached, nil
 	}
 	meta := &aiid.UserLoginMetadata{SyntheticDefault: true}
-	ensureMetadataDefaults(meta, c.defaultProviderConfig(), c.configuredProviders())
+	ensureMetadataDefaults(meta, c.defaultProviderConfig())
 	return user.NewLogin(ctx, &database.UserLogin{
 		ID:         loginID,
 		RemoteName: aiid.DefaultLoginName,

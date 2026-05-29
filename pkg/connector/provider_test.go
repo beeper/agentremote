@@ -63,18 +63,6 @@ func TestCustomProviderAuthUsesProviderKeyAndHeaders(t *testing.T) {
 func TestConfigDefaults(t *testing.T) {
 	config := Config{}
 	config.ApplyDefaults()
-	if config.StreamType != aiid.StreamType {
-		t.Fatalf("unexpected stream type %#v", config)
-	}
-	if config.DefaultProvider.BaseURL != "" {
-		t.Fatalf("expected default provider base URL to come from homeserver domain, got %q", config.DefaultProvider.BaseURL)
-	}
-	if len(config.DefaultProvider.AllowedModels) != 0 {
-		t.Fatalf("expected AI Services catalog instead of static default allowlist, got %#v", config.DefaultProvider.AllowedModels)
-	}
-	if config.DefaultProvider.Provider != ai.ProviderOpenAI || config.DefaultProvider.DefaultModel != "gpt-5.5" {
-		t.Fatalf("expected default provider to route through AI Services, got %#v", config.DefaultProvider)
-	}
 	if config.DefaultSystemPrompt == "" || config.DefaultReasoningLevel != "off" {
 		t.Fatalf("expected chat defaults, got %#v", config)
 	}
@@ -83,19 +71,18 @@ func TestConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestDefaultAIServicesProxyBaseURLFollowsHomeserverDomain(t *testing.T) {
-	if got := defaultAIServicesProxyBaseURL("matrix.beeper.com"); got != "https://ai-services.beeper.com/proxy/_/v1" {
-		t.Fatalf("unexpected production AI Services URL %q", got)
-	}
-	if got := defaultAIServicesProxyBaseURL("beeper-staging.com"); got != "https://ai-services.beeper-staging.com/proxy/_/v1" {
-		t.Fatalf("unexpected staging AI Services URL %q", got)
+func TestDefaultAIServicesProxyBaseURLFollowsHomeserverAddress(t *testing.T) {
+	if got := defaultAIServicesProxyBaseURL("https://matrix.beeper-staging.com/_hungryserv/test"); got != "https://ai-services.beeper-staging.com/proxy/_/v1" {
+		t.Fatalf("unexpected staging AI Services URL from homeserver address %q", got)
 	}
 }
 
-func TestDefaultProviderBaseURLUsesConnectorHomeserverDomain(t *testing.T) {
-	conn := &Connector{HomeserverDomain: "matrix.beeper.com"}
+func TestDefaultProviderBaseURLUsesConnectorHomeserverAddress(t *testing.T) {
+	conn := &Connector{
+		HomeserverAddress: "https://matrix.beeper-staging.com/_hungryserv/test",
+	}
 	provider := conn.defaultProviderConfig()
-	if provider.BaseURL != "https://ai-services.beeper.com/proxy/_/v1" {
+	if provider.BaseURL != "https://ai-services.beeper-staging.com/proxy/_/v1" {
 		t.Fatalf("unexpected provider base URL %q", provider.BaseURL)
 	}
 }
@@ -214,38 +201,6 @@ func TestProviderModelsParsesOptionalModelList(t *testing.T) {
 	}
 	if models[0].ID != "gpt-5" || models[1].ID != "gpt-5-mini" || models[2].ID != "local" {
 		t.Fatalf("unexpected model order %#v", models)
-	}
-}
-
-func TestBuildProviderFromCommandArgs(t *testing.T) {
-	provider, err := buildProviderFromCommandArgs([]string{"local", "https://example.test/v1/responses", "key", "model-a", "model-b", "model-c"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if provider.ID != "local" || provider.APIKey != "key" || provider.DefaultModel != "model-a" {
-		t.Fatalf("unexpected provider %#v", provider)
-	}
-	if provider.BaseURL != "https://example.test/v1" {
-		t.Fatalf("unexpected base URL %q", provider.BaseURL)
-	}
-	if len(provider.Models) != 3 || provider.Models[1].ID != "model-b" || provider.Models[2].ID != "model-c" {
-		t.Fatalf("unexpected models %#v", provider.Models)
-	}
-}
-
-func TestBuildProviderFromCommandArgsUsesCanonicalOpenRouterModels(t *testing.T) {
-	provider, err := buildProviderFromCommandArgs([]string{"openrouter", "https://openrouter.ai/api/v1", "env:OPENROUTER_API_KEY", "anthropic/claude-sonnet-4.5", "moonshotai/kimi-k2.6"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if provider.Provider != ai.ProviderOpenRouter || provider.API != ai.ApiOpenAICompletions {
-		t.Fatalf("expected OpenRouter route, got %#v", provider)
-	}
-	if len(provider.Models) != 0 {
-		t.Fatalf("expected route to use generated catalog instead of duplicating models, got %#v", provider.Models)
-	}
-	if len(provider.AllowedModels) != 2 || provider.AllowedModels[0] != "anthropic/claude-sonnet-4.5" {
-		t.Fatalf("unexpected allowed models %#v", provider.AllowedModels)
 	}
 }
 

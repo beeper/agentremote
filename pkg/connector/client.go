@@ -812,7 +812,7 @@ func (cl *Client) assistantStreamPublisher(publisher bridgev2.BeeperStreamPublis
 			messageID,
 			aiid.PartID("text"),
 		)
-		descriptor, err := publisher.NewDescriptor(ctx, portal.MXID, cl.Main.Config.StreamType)
+		descriptor, err := publisher.NewDescriptor(ctx, portal.MXID, aiid.StreamType)
 		if err != nil {
 			return hookStreamError(err)
 		}

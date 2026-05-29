@@ -68,7 +68,7 @@ func (c *Connector) ReadRoomConfig(ctx context.Context, roomID id.RoomID) (RoomC
 
 func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLogin, roomConfig RoomConfig) (aiid.ProviderConfig, string, error) {
 	meta := login.Metadata.(*aiid.UserLoginMetadata)
-	ensureMetadataDefaults(meta, c.defaultProviderConfig(), c.configuredProviders())
+	ensureMetadataDefaults(meta, c.defaultProviderConfig())
 	providerID := roomConfig.ProviderID
 	if providerID == "" {
 		providerID = meta.DefaultProviderID

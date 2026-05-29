@@ -31,6 +31,10 @@ const (
 
 func (c *Connector) GetLoginFlows() []bridgev2.LoginFlow {
 	return []bridgev2.LoginFlow{{
+		Name:        "Beeper AI",
+		Description: "Use the default Beeper AI provider",
+		ID:          loginFlowDefaultProvider,
+	}, {
 		Name:        "OpenAI Responses",
 		Description: "Add a provider using the OpenAI Responses API",
 		ID:          loginFlowOpenAIResponses,
@@ -298,7 +302,7 @@ func (c *Connector) UpsertProviderLogin(ctx context.Context, user *bridgev2.User
 	if err != nil {
 		return nil, err
 	}
-	if err = c.AddProviderToLogin(ctx, mainLogin, provider); err != nil {
+	if err = c.addProviderToLogin(ctx, mainLogin, provider); err != nil {
 		return nil, err
 	}
 	loginID := aiid.ProviderLoginID(mainLogin.ID, provider.ID)
@@ -325,6 +329,26 @@ func (c *Connector) UpsertProviderLogin(ctx context.Context, user *bridgev2.User
 	}
 	c.connectProviderLogin(ctx, login)
 	return login, nil
+}
+
+func (c *Connector) addProviderToLogin(ctx context.Context, login *bridgev2.UserLogin, provider aiid.ProviderConfig) error {
+	if provider.ID == "" {
+		return fmt.Errorf("provider id is required")
+	}
+	if provider.ID == aiid.DefaultProvider {
+		return fmt.Errorf("provider id %q is reserved for the homeserver-derived Beeper AI provider", aiid.DefaultProvider)
+	}
+	meta, ok := login.Metadata.(*aiid.UserLoginMetadata)
+	if !ok {
+		return fmt.Errorf("unexpected login metadata type %T", login.Metadata)
+	}
+	ensureMetadataDefaults(meta, c.defaultProviderConfig())
+	meta.Providers[provider.ID] = provider
+	if meta.DefaultProviderID == "" || meta.DefaultProviderID == aiid.DefaultProvider && !meta.SyntheticDefault {
+		meta.DefaultProviderID = provider.ID
+		meta.DefaultModelID = provider.DefaultModel
+	}
+	return login.Save(ctx)
 }
 
 func (c *Connector) connectProviderLogin(ctx context.Context, login *bridgev2.UserLogin) {

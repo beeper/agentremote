@@ -50,7 +50,7 @@ func (cl *ProviderLoginClient) LogoutRemote(ctx context.Context) {
 			if meta.DefaultProviderID == providerID {
 				meta.DefaultProviderID = ""
 				meta.DefaultModelID = ""
-				ensureMetadataDefaults(meta, cl.Main.defaultProviderConfig(), cl.Main.configuredProviders())
+				ensureMetadataDefaults(meta, cl.Main.defaultProviderConfig())
 			}
 			_ = parent.Save(ctx)
 		}
@@ -101,7 +101,7 @@ func (cl *ProviderLoginClient) GetContactList(ctx context.Context) ([]*bridgev2.
 	if err != nil || !ok {
 		return nil, err
 	}
-	return providerModelContacts(provider, ""), nil
+	return providerModelContacts(ctx, cl.bridge(), provider, ""), nil
 }
 
 func (cl *ProviderLoginClient) SearchUsers(ctx context.Context, query string) ([]*bridgev2.ResolveIdentifierResponse, error) {
@@ -109,7 +109,7 @@ func (cl *ProviderLoginClient) SearchUsers(ctx context.Context, query string) ([
 	if err != nil || !ok {
 		return nil, err
 	}
-	return providerModelContacts(provider, strings.ToLower(strings.TrimSpace(query))), nil
+	return providerModelContacts(ctx, cl.bridge(), provider, strings.ToLower(strings.TrimSpace(query))), nil
 }
 
 func (cl *ProviderLoginClient) ResolveIdentifier(ctx context.Context, identifier string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
@@ -125,7 +125,7 @@ func (cl *ProviderLoginClient) ResolveIdentifier(ctx context.Context, identifier
 	if !ok {
 		return nil, fmt.Errorf("unknown AI model %s", identifier)
 	}
-	resp := modelContact(provider, model)
+	resp := modelContactWithGhost(ctx, cl.bridge(), provider, model)
 	if !createChat {
 		return resp, nil
 	}
@@ -190,6 +190,13 @@ func (cl *ProviderLoginClient) parentLoginID() networkid.UserLoginID {
 		return cl.UserLogin.ID
 	}
 	return ""
+}
+
+func (cl *ProviderLoginClient) bridge() *bridgev2.Bridge {
+	if cl == nil || cl.Main == nil {
+		return nil
+	}
+	return cl.Main.Bridge
 }
 
 func (cl *ProviderLoginClient) provider(ctx context.Context) (aiid.ProviderConfig, bool, error) {
