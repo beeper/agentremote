@@ -3,6 +3,8 @@ package connector
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -228,7 +230,7 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 		t.Fatalf("assistant event used sender %q", assistantEvent.Sender.Sender)
 	}
 	profile := assistantEvent.Data.Parts[0].Content.BeeperPerMessageProfile
-	if profile == nil || profile.ID != "beeper/gpt-5" || profile.Displayname != "gpt-5" || !profile.HasFallback {
+	if profile == nil || profile.ID != string(aiid.ModelContactID("beeper", "gpt-5")) || profile.Displayname != "gpt-5" || !profile.HasFallback {
 		t.Fatalf("assistant event missing model profile: %#v", profile)
 	}
 	fillAssistantMetadata(metadata, "entry", "beeper", "gpt-5", "run", ai.Message{
@@ -257,26 +259,59 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile = converted.ModifiedParts[0].Content.BeeperPerMessageProfile
-	if profile == nil || profile.ID != "beeper/gpt-5" || profile.Displayname != "gpt-5" || !profile.HasFallback {
+	if profile == nil || profile.ID != string(aiid.ModelContactID("beeper", "gpt-5")) || profile.Displayname != "gpt-5" || !profile.HasFallback {
 		t.Fatalf("assistant final edit missing model profile: %#v", profile)
 	}
 }
 
 func TestAssistantModelProfileUsesConfiguredModelDisplayName(t *testing.T) {
-	client := &Client{UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		ID: "login",
 		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
-			"beeper": {
-				ID:     "beeper",
+			"custom": {
+				ID:     "custom",
 				Models: []ai.Model{{ID: "gpt-5.5", Name: "GPT 5.5"}},
 			},
 		}},
 	}}}
 	content := &event.MessageEventContent{}
-	client.applyModelProfile(context.Background(), content, "beeper", "gpt-5.5")
+	client.applyModelProfile(context.Background(), content, "custom", "gpt-5.5")
 	profile := content.BeeperPerMessageProfile
-	if profile == nil || profile.ID != "beeper/gpt-5.5" || profile.Displayname != "GPT 5.5" || !profile.HasFallback {
+	if profile == nil || profile.ID != string(aiid.ModelContactID("custom", "gpt-5.5")) || profile.Displayname != "GPT 5.5" || !profile.HasFallback {
 		t.Fatalf("assistant model profile lost configured display name: %#v", profile)
+	}
+}
+
+func TestAssistantModelProfileUsesCatalogDisplayName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT 5.5 Catalog","provider":{"id":"wpcom_openai","model_id":"gpt-5.5","api":"openai-responses"}}]}`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		Main: &Connector{AppServiceToken: "as-token"},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+			UserMXID: "@test:beeper.com",
+			Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
+				"beeper": {
+					ID:           aiid.DefaultProvider,
+					DisplayName:  "Beeper AI",
+					API:          ai.ApiOpenAIResponses,
+					Provider:     ai.ProviderOpenAI,
+					BaseURL:      server.URL + "/proxy/openai/v1",
+					DefaultModel: "beeper/default",
+				},
+			}},
+		}},
+	}
+	content := &event.MessageEventContent{}
+	client.applyModelProfile(context.Background(), content, "beeper", "openai/gpt-5.5")
+	profile := content.BeeperPerMessageProfile
+	if profile == nil || profile.ID != string(aiid.ModelContactID("beeper", "openai/gpt-5.5")) || profile.Displayname != "GPT 5.5 Catalog" || !profile.HasFallback {
+		t.Fatalf("assistant model profile ignored catalog display name: %#v", profile)
 	}
 }
 

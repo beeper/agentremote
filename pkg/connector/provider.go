@@ -88,6 +88,17 @@ func normalizeProviderModel(model ai.Model, provider aiid.ProviderConfig) ai.Mod
 	if len(model.Input) == 0 {
 		model.Input = []string{"text"}
 	}
+	if catalogModel, ok := ai.GetModel(model.Provider, model.ID); ok {
+		if !model.Reasoning {
+			model.Reasoning = catalogModel.Reasoning
+		}
+		if len(model.ThinkingLevelMap) == 0 && len(catalogModel.ThinkingLevelMap) > 0 {
+			model.ThinkingLevelMap = catalogModel.ThinkingLevelMap
+		}
+		if model.DefaultThinkingLevel == "" {
+			model.DefaultThinkingLevel = catalogModel.DefaultThinkingLevel
+		}
+	}
 	model.BaseURL = normalizeResponsesBaseURL(model.BaseURL)
 	return model
 }

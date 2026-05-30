@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +12,6 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
-	"maunium.net/go/mautrix/bridgev2/bridgeconfig"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -260,26 +258,6 @@ func TestDefaultProviderHasNoRouteWithoutUserHomeserver(t *testing.T) {
 	}
 }
 
-func TestConfiguredLoginUserMXIDsUsesExplicitLoginPermissions(t *testing.T) {
-	admin := bridgeconfig.PermissionLevelAdmin
-	user := bridgeconfig.PermissionLevelUser
-	commands := bridgeconfig.PermissionLevelCommands
-	conn := &Connector{Bridge: &bridgev2.Bridge{Config: &bridgeconfig.BridgeConfig{
-		Permissions: bridgeconfig.PermissionConfig{
-			"@admin:example.com":    &admin,
-			"@commands:example.com": &commands,
-			"@user:example.com":     &user,
-			"example.com":           &admin,
-			"*":                     &admin,
-		},
-	}}}
-
-	mxids := conn.configuredLoginUserMXIDs()
-	if len(mxids) != 2 || mxids[0] != "@admin:example.com" || mxids[1] != "@user:example.com" {
-		t.Fatalf("unexpected configured login users %#v", mxids)
-	}
-}
-
 func TestConnectorCapabilitiesAdvertiseAISessionCreation(t *testing.T) {
 	conn := &Connector{}
 	caps := conn.GetCapabilities()
@@ -295,22 +273,16 @@ func TestConnectorCapabilitiesAdvertiseAISessionCreation(t *testing.T) {
 	}
 }
 
-func TestConfigureBridgeV2MessageStatusesMapsNoPortal(t *testing.T) {
-	original := bridgev2.ErrNoPortal
-	t.Cleanup(func() {
-		bridgev2.ErrNoPortal = original
-	})
-	configureBridgeV2MessageStatuses()
-
-	status := bridgev2.WrapErrorInStatus(bridgev2.ErrNoPortal)
+func TestNoAIChatStatusIsLocalAndPermanent(t *testing.T) {
+	status := errNoAIChat()
 	if status.Status != event.MessageStatusFail || status.ErrorReason != event.MessageStatusUnsupported {
 		t.Fatalf("expected permanent unsupported no-portal status, got %#v", status)
 	}
 	if status.Message == "" || status.ErrorReason == event.MessageStatusGenericError {
 		t.Fatalf("expected specific no-portal message status, got %#v", status)
 	}
-	if !errors.Is(bridgev2.ErrNoPortal, status.InternalError) {
-		t.Fatalf("expected wrapped no-portal error to remain unwrap-compatible")
+	if status.InternalError == nil || status.InternalError.Error() != "room is not an AI chat" {
+		t.Fatalf("expected local no-AI-chat internal error, got %#v", status.InternalError)
 	}
 }
 
@@ -339,14 +311,20 @@ func TestRoomFeaturesDisableReactions(t *testing.T) {
 		t.Fatalf("expected text file support, got %#v", caps.File[event.MsgFile])
 	}
 	for _, stateType := range []string{aiid.RoomToolsType, aiid.RoomModelType, aiid.RoomPromptType} {
-		if caps.State[stateType] == nil || caps.State[stateType].Level != event.CapLevelFullySupported {
-			t.Fatalf("expected %s state support, got %#v", stateType, caps.State[stateType])
+		if caps.State[stateType] != nil {
+			t.Fatalf("did not expect %s state support without arbitrary state support, got %#v", stateType, caps.State[stateType])
+		}
+	}
+	withState := roomFeaturesForModel(ai.Model{}, true)
+	for _, stateType := range []string{aiid.RoomToolsType, aiid.RoomModelType, aiid.RoomPromptType} {
+		if withState.State[stateType] == nil || withState.State[stateType].Level != event.CapLevelFullySupported {
+			t.Fatalf("expected %s state support with arbitrary state support, got %#v", stateType, withState.State[stateType])
 		}
 	}
 }
 
 func TestRoomFeaturesFollowModelInputModalities(t *testing.T) {
-	textCaps := roomFeaturesForModel(ai.Model{Input: []string{"text"}})
+	textCaps := roomFeaturesForModel(ai.Model{Input: []string{"text"}}, true)
 	if textCaps.File[event.MsgImage] != nil || textCaps.File[event.MsgAudio] != nil || textCaps.File[event.CapMsgVoice] != nil {
 		t.Fatalf("text-only model should not advertise media input, got %#v", textCaps.File)
 	}
@@ -354,7 +332,7 @@ func TestRoomFeaturesFollowModelInputModalities(t *testing.T) {
 		t.Fatalf("text-like files should be available through prompt text conversion")
 	}
 
-	visionCaps := roomFeaturesForModel(ai.Model{Input: []string{"text", "image"}})
+	visionCaps := roomFeaturesForModel(ai.Model{Input: []string{"text", "image"}}, true)
 	if visionCaps.File[event.MsgImage] == nil {
 		t.Fatalf("vision model should advertise image input")
 	}
@@ -362,7 +340,7 @@ func TestRoomFeaturesFollowModelInputModalities(t *testing.T) {
 		t.Fatalf("vision-only model should not advertise audio input")
 	}
 
-	audioCaps := roomFeaturesForModel(ai.Model{Input: []string{"text", "audio"}})
+	audioCaps := roomFeaturesForModel(ai.Model{Input: []string{"text", "audio"}}, true)
 	if audioCaps.File[event.MsgAudio] == nil || audioCaps.File[event.CapMsgVoice] == nil {
 		t.Fatalf("audio model should advertise audio and voice input")
 	}
@@ -559,5 +537,43 @@ func TestValidateReasoningLevelAcceptsOffForReasoningModel(t *testing.T) {
 	}
 	if err := client.validateReasoningLevel(model, RoomConfig{}); err != nil {
 		t.Fatalf("expected default off reasoning to be accepted: %v", err)
+	}
+}
+
+func TestDefaultReasoningLevelClampsForMandatoryReasoningModel(t *testing.T) {
+	client := &Client{Main: &Connector{Config: Config{DefaultReasoningLevel: "off"}}}
+	model := ai.Model{
+		ID:                   "minimax/minimax-m2.7",
+		Provider:             ai.ProviderOpenRouter,
+		Reasoning:            true,
+		DefaultThinkingLevel: ai.ModelThinkingLevelLow,
+		ThinkingLevelMap:     map[ai.ModelThinkingLevel]*string{ai.ModelThinkingLevelOff: nil},
+	}
+	if got := client.reasoningLevelForModel(model, RoomConfig{}); got != "low" {
+		t.Fatalf("expected default off to clamp to low, got %q", got)
+	}
+	if err := client.validateReasoningLevel(model, RoomConfig{}); err != nil {
+		t.Fatalf("expected clamped default reasoning to be accepted: %v", err)
+	}
+	if err := client.validateReasoningLevel(model, RoomConfig{ThinkingLevel: "off"}); err == nil {
+		t.Fatalf("expected explicit off reasoning to be rejected")
+	}
+}
+
+func TestNormalizeProviderModelInheritsCatalogReasoningMetadata(t *testing.T) {
+	model := normalizeProviderModel(ai.Model{
+		ID:                   "minimax/minimax-m2.7",
+		Provider:             ai.ProviderOpenRouter,
+		Reasoning:            true,
+		DefaultThinkingLevel: ai.ModelThinkingLevelLow,
+		ThinkingLevelMap:     map[ai.ModelThinkingLevel]*string{ai.ModelThinkingLevelOff: nil},
+	}, aiid.ProviderConfig{
+		ID:       aiid.DefaultProvider,
+		Provider: ai.ProviderOpenAI,
+		API:      ai.ApiOpenAIResponses,
+		BaseURL:  "https://ai-services.test/proxy/openrouter/v1",
+	})
+	if roomThinkingLevelSupported(model, ai.ModelThinkingLevelOff) {
+		t.Fatalf("expected normalized MiniMax M2.7 catalog model to reject off reasoning")
 	}
 }

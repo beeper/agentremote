@@ -2,10 +2,8 @@ package connector
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/url"
-	"sort"
 	"strings"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
@@ -15,7 +13,6 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
-	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
 
@@ -43,19 +40,10 @@ func (c *Connector) GetName() bridgev2.BridgeName {
 }
 
 func (c *Connector) Init(bridge *bridgev2.Bridge) {
-	configureBridgeV2MessageStatuses()
 	c.Config.ApplyDefaults()
 	c.Bridge = bridge
 	c.Store = aidb.NewStore(bridge.DB.Database, dbutil.ZeroLogger(bridge.Log.With().Str("db_section", "ai").Logger()))
-}
-
-func configureBridgeV2MessageStatuses() {
-	bridgev2.ErrNoPortal = bridgev2.WrapErrorInStatus(errors.New("room is not an AI chat")).
-		WithStatus(event.MessageStatusFail).
-		WithErrorReason(event.MessageStatusUnsupported).
-		WithMessage("This room is not linked to an AI chat. Start a new AI chat or recreate this portal.").
-		WithIsCertain(true).
-		WithSendNotice(true)
+	c.registerAICommands()
 }
 
 func (c *Connector) Start(ctx context.Context) error {
@@ -65,10 +53,7 @@ func (c *Connector) Start(ctx context.Context) error {
 	if err := c.Store.Upgrade(ctx); err != nil {
 		return bridgev2.DBUpgradeError{Err: err, Section: "ai"}
 	}
-	if err := c.ensureDefaultLoginsForConfiguredUsers(ctx); err != nil {
-		return err
-	}
-	return c.ensureDefaultLoginsForExistingUsers(ctx)
+	return nil
 }
 
 func (c *Connector) ValidateConfig() error {
@@ -177,68 +162,6 @@ func (c *Connector) defaultLoginID(mxid id.UserID) networkid.UserLoginID {
 	return aiid.DefaultLoginID(mxid)
 }
 
-func (c *Connector) configuredLoginUserMXIDs() []id.UserID {
-	if c == nil || c.Bridge == nil || c.Bridge.Config == nil {
-		return nil
-	}
-	mxids := make([]id.UserID, 0, len(c.Bridge.Config.Permissions))
-	for rawMXID, permissions := range c.Bridge.Config.Permissions {
-		if permissions == nil || !permissions.Login || !strings.HasPrefix(rawMXID, "@") {
-			continue
-		}
-		mxid := id.UserID(rawMXID)
-		if _, _, err := mxid.Parse(); err != nil {
-			continue
-		}
-		mxids = append(mxids, mxid)
-	}
-	sort.Slice(mxids, func(i, j int) bool {
-		return mxids[i] < mxids[j]
-	})
-	return mxids
-}
-
-func (c *Connector) ensureDefaultLoginsForConfiguredUsers(ctx context.Context) error {
-	for _, mxid := range c.configuredLoginUserMXIDs() {
-		user, err := c.Bridge.GetUserByMXID(ctx, mxid)
-		if err != nil {
-			return fmt.Errorf("load configured user %s: %w", mxid, err)
-		}
-		if _, err = c.EnsureDefaultLogin(ctx, user); err != nil {
-			return fmt.Errorf("ensure default login for configured user %s: %w", mxid, err)
-		}
-	}
-	return nil
-}
-
-func (c *Connector) ensureDefaultLoginsForExistingUsers(ctx context.Context) error {
-	rows, err := c.Bridge.DB.User.GetDB().Query(ctx, `SELECT mxid FROM "user" WHERE bridge_id=$1`, c.Bridge.ID)
-	if err != nil {
-		return fmt.Errorf("query existing users: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var mxid id.UserID
-		if err = rows.Scan(&mxid); err != nil {
-			return fmt.Errorf("scan existing user: %w", err)
-		}
-		user, err := c.Bridge.GetExistingUserByMXID(ctx, mxid)
-		if err != nil {
-			return fmt.Errorf("load existing user %s: %w", mxid, err)
-		}
-		if user == nil {
-			continue
-		}
-		if _, err = c.EnsureDefaultLogin(ctx, user); err != nil {
-			return fmt.Errorf("ensure default login for %s: %w", mxid, err)
-		}
-	}
-	if err = rows.Err(); err != nil {
-		return fmt.Errorf("iterate existing users: %w", err)
-	}
-	return nil
-}
-
 func (c *Connector) EnsureDefaultLogin(ctx context.Context, user *bridgev2.User) (*bridgev2.UserLogin, error) {
 	loginID := c.defaultLoginID(user.MXID)
 	if cached := c.Bridge.GetCachedUserLoginByID(loginID); cached != nil {
@@ -262,7 +185,7 @@ func (c *Connector) EnsureDefaultLogin(ctx context.Context, user *bridgev2.User)
 
 func (c *Connector) ResolveLogin(ctx context.Context, user *bridgev2.User, requested networkid.UserLoginID) (*bridgev2.UserLogin, error) {
 	if requested == "" {
-		return c.EnsureDefaultLogin(ctx, user)
+		return nil, fmt.Errorf("login ID is required")
 	}
 	if cached := c.Bridge.GetCachedUserLoginByID(requested); cached != nil && cached.UserMXID == user.MXID {
 		return cached, nil

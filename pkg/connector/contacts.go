@@ -50,8 +50,9 @@ func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderCon
 		return nil, err
 	}
 	name := defaultConversationTitle(provider, model)
+	topic := modelRoomDescription(provider, model)
 	roomType := database.RoomTypeDM
-	info := &bridgev2.ChatInfo{Name: &name, Type: &roomType, Members: aiChatMembers()}
+	info := &bridgev2.ChatInfo{Name: &name, Topic: &topic, Avatar: modelAvatar(provider, model), Type: &roomType, Members: aiChatMembers()}
 	meta := portalMetadata(portal)
 	meta.AutoTitlePending = true
 	if portal.MXID == "" {
@@ -61,7 +62,7 @@ func (cl *Client) createModelChat(ctx context.Context, provider aiid.ProviderCon
 	} else if err = portal.Save(ctx); err != nil {
 		return nil, err
 	}
-	if _, err = cl.writeRoomModelState(ctx, portal, provider.ID+"/"+model.ID, ""); err != nil {
+	if _, err = cl.writeRoomModelState(ctx, portal, provider, model, provider.ID+"/"+model.ID, ""); err != nil {
 		return nil, err
 	}
 	return &bridgev2.CreateChatResponse{
@@ -84,8 +85,19 @@ func aiChatMembers() *bridgev2.ChatMemberList {
 			aiid.AssistantUserID(): {
 				EventSender: bridgev2.EventSender{Sender: aiid.AssistantUserID()},
 				Membership:  event.MembershipJoin,
+				UserInfo:    aiAssistantUserInfo(),
 			},
 		},
+	}
+}
+
+func aiAssistantUserInfo() *bridgev2.UserInfo {
+	isBot := true
+	name := "AI"
+	return &bridgev2.UserInfo{
+		Name:   &name,
+		IsBot:  &isBot,
+		Avatar: defaultAIAssistantAvatar(),
 	}
 }
 
@@ -228,15 +240,17 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 			continue
 		}
 		model := ai.Model{
-			ID:            modelID,
-			Name:          item.Name,
-			API:           provider.API,
-			Provider:      provider.Provider,
-			BaseURL:       provider.BaseURL,
-			Reasoning:     item.reasoning(),
-			Input:         item.inputModalities(),
-			ContextWindow: item.contextWindow(),
-			MaxTokens:     item.maxTokens(),
+			ID:                   modelID,
+			Name:                 item.Name,
+			API:                  provider.API,
+			Provider:             provider.Provider,
+			BaseURL:              provider.BaseURL,
+			Reasoning:            item.reasoning(),
+			ThinkingLevelMap:     item.thinkingLevelMap(),
+			DefaultThinkingLevel: item.defaultThinkingLevel(),
+			Input:                item.inputModalities(),
+			ContextWindow:        item.contextWindow(),
+			MaxTokens:            item.maxTokens(),
 		}
 		model = item.applyProviderRoute(model, provider)
 		models = append(models, normalizeProviderModel(model, provider))
@@ -299,7 +313,10 @@ type aiServicesModelEntry struct {
 			Modalities []string `json:"modalities"`
 		} `json:"input"`
 		Reasoning *struct {
-			Supported bool `json:"supported"`
+			Supported    bool               `json:"supported"`
+			Levels       []string           `json:"levels"`
+			LevelMap     map[string]*string `json:"level_map"`
+			DefaultLevel string             `json:"default_level"`
 		} `json:"reasoning"`
 		Limits *struct {
 			ContextTokens int `json:"context_tokens"`
@@ -378,6 +395,79 @@ func (entry aiServicesModelEntry) reasoning() bool {
 	return entry.Capabilities != nil && entry.Capabilities.Reasoning != nil && entry.Capabilities.Reasoning.Supported
 }
 
+func (entry aiServicesModelEntry) thinkingLevelMap() map[ai.ModelThinkingLevel]*string {
+	if entry.Capabilities == nil || entry.Capabilities.Reasoning == nil || len(entry.Capabilities.Reasoning.Levels) == 0 {
+		return nil
+	}
+	if len(entry.Capabilities.Reasoning.LevelMap) > 0 {
+		out := map[ai.ModelThinkingLevel]*string{}
+		for rawLevel, rawMapped := range entry.Capabilities.Reasoning.LevelMap {
+			level := ai.ModelThinkingLevel(strings.ToLower(strings.TrimSpace(rawLevel)))
+			if !modelThinkingLevelKnown(level) {
+				continue
+			}
+			if rawMapped == nil {
+				out[level] = nil
+				continue
+			}
+			mapped := *rawMapped
+			out[level] = &mapped
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	supportedLevels := map[ai.ModelThinkingLevel]bool{}
+	for _, rawLevel := range entry.Capabilities.Reasoning.Levels {
+		level := ai.ModelThinkingLevel(strings.ToLower(strings.TrimSpace(rawLevel)))
+		if modelThinkingLevelKnown(level) {
+			supportedLevels[level] = true
+		}
+	}
+	if len(supportedLevels) == 0 {
+		return nil
+	}
+	out := map[ai.ModelThinkingLevel]*string{}
+	for _, level := range []ai.ModelThinkingLevel{
+		ai.ModelThinkingLevelOff,
+		ai.ModelThinkingLevelMinimal,
+		ai.ModelThinkingLevelLow,
+		ai.ModelThinkingLevelMedium,
+		ai.ModelThinkingLevelHigh,
+		ai.ModelThinkingLevelXHigh,
+	} {
+		if supportedLevels[level] {
+			if level == ai.ModelThinkingLevelXHigh {
+				mapped := string(level)
+				out[level] = &mapped
+			}
+			continue
+		}
+		out[level] = nil
+	}
+	return out
+}
+
+func (entry aiServicesModelEntry) defaultThinkingLevel() ai.ModelThinkingLevel {
+	if entry.Capabilities == nil || entry.Capabilities.Reasoning == nil {
+		return ""
+	}
+	level := ai.ModelThinkingLevel(strings.ToLower(strings.TrimSpace(entry.Capabilities.Reasoning.DefaultLevel)))
+	if !modelThinkingLevelKnown(level) {
+		return ""
+	}
+	return level
+}
+
+func modelThinkingLevelKnown(level ai.ModelThinkingLevel) bool {
+	switch level {
+	case ai.ModelThinkingLevelOff, ai.ModelThinkingLevelMinimal, ai.ModelThinkingLevelLow, ai.ModelThinkingLevelMedium, ai.ModelThinkingLevelHigh, ai.ModelThinkingLevelXHigh:
+		return true
+	default:
+		return false
+	}
+}
+
 func modelContact(provider aiid.ProviderConfig, model ai.Model) *bridgev2.ResolveIdentifierResponse {
 	info := modelUserInfo(provider, model)
 	return &bridgev2.ResolveIdentifierResponse{
@@ -399,13 +489,22 @@ func modelUserInfo(provider aiid.ProviderConfig, model ai.Model) *bridgev2.UserI
 
 func modelContactWithGhost(ctx context.Context, br *bridgev2.Bridge, provider aiid.ProviderConfig, model ai.Model) *bridgev2.ResolveIdentifierResponse {
 	resp := modelContact(provider, model)
-	if br != nil {
-		if ghost, err := br.GetGhostByID(ctx, resp.UserID); err == nil {
-			ghost.UpdateInfo(ctx, resp.UserInfo)
-			resp.Ghost = ghost
-		}
+	if ghost, err := updateModelGhostInfo(ctx, br, provider, model); err == nil {
+		resp.Ghost = ghost
 	}
 	return resp
+}
+
+func updateModelGhostInfo(ctx context.Context, br *bridgev2.Bridge, provider aiid.ProviderConfig, model ai.Model) (*bridgev2.Ghost, error) {
+	if br == nil {
+		return nil, fmt.Errorf("missing bridge")
+	}
+	ghost, err := br.GetGhostByID(ctx, aiid.ModelContactID(provider.ID, model.ID))
+	if err != nil {
+		return nil, err
+	}
+	ghost.UpdateInfo(ctx, modelUserInfo(provider, model))
+	return ghost, nil
 }
 
 func resolveModelForProvider(provider aiid.ProviderConfig, identifier string) (ai.Model, bool) {

@@ -53,7 +53,7 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 			t.Fatalf("unexpected query %s", r.URL.RawQuery)
 		}
 		gotAuth = r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5","capabilities":{"input":{"modalities":["text","image"]},"output":{"modalities":["text"]},"reasoning":{"supported":true},"limits":{"context_tokens":1050000,"output_tokens":128000}}},{"id":"beeper/fast","name":"Beeper Fast","capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]}}}]}`))
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5","capabilities":{"input":{"modalities":["text","image"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["off","minimal","low","medium","high","xhigh"],"level_map":{"xhigh":"xhigh"},"default_level":"off"},"limits":{"context_tokens":1050000,"output_tokens":128000}}},{"id":"minimax/minimax-m2.7","name":"MiniMax M2.7","provider":{"id":"openrouter","model_id":"minimax/minimax-m2.7","api":"openai-responses"},"capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]},"reasoning":{"supported":true,"levels":["low","medium","high"],"level_map":{"off":null,"minimal":null},"default_level":"low"}}},{"id":"beeper/fast","name":"Beeper Fast","capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]}}}]}`))
 	}))
 	defer server.Close()
 
@@ -77,7 +77,7 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 	if !strings.HasPrefix(gotAuth, "Bearer "+aiServicesAppserviceTokenPrefix) {
 		t.Fatalf("unexpected auth header %q", gotAuth)
 	}
-	if len(models) != 2 || models[0].ID != "openai/gpt-5.5" || models[0].BaseURL != server.URL+"/proxy/openai/v1" {
+	if len(models) != 3 || models[0].ID != "openai/gpt-5.5" || models[0].BaseURL != server.URL+"/proxy/openai/v1" {
 		t.Fatalf("unexpected models %#v", models)
 	}
 	if models[0].ContextWindow != 1050000 || models[0].MaxTokens != 128000 {
@@ -85,6 +85,18 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 	}
 	if !models[0].Reasoning {
 		t.Fatalf("expected AI Services reasoning metadata, got %#v", models[0])
+	}
+	if models[0].DefaultThinkingLevel != ai.ModelThinkingLevelOff || !roomThinkingLevelSupported(models[0], ai.ModelThinkingLevelOff) {
+		t.Fatalf("expected AI Services reasoning defaults, got %#v", models[0])
+	}
+	if got := models[0].ThinkingLevelMap[ai.ModelThinkingLevelXHigh]; got == nil || *got != "xhigh" {
+		t.Fatalf("expected AI Services xhigh map, got %#v", models[0].ThinkingLevelMap)
+	}
+	if models[1].DefaultThinkingLevel != ai.ModelThinkingLevelLow || roomThinkingLevelSupported(models[1], ai.ModelThinkingLevelOff) {
+		t.Fatalf("expected MiniMax reasoning to default to low and reject off, got %#v", models[1])
+	}
+	if roomThinkingLevelSupported(models[1], ai.ModelThinkingLevelMinimal) {
+		t.Fatalf("expected MiniMax reasoning to reject minimal, got %#v", models[1])
 	}
 }
 
@@ -219,6 +231,16 @@ func TestAIChatMembersUseGlobalAssistantGhost(t *testing.T) {
 	}
 	if member, ok := members.MemberMap[aiid.AssistantUserID()]; !ok || member.Sender != aiid.AssistantUserID() {
 		t.Fatalf("expected assistant ghost member, got %#v", members.MemberMap)
+	} else if member.UserInfo == nil || member.UserInfo.Avatar == nil || string(member.UserInfo.Avatar.MXC) != defaultAIAssistantAvatarMXC {
+		t.Fatalf("expected assistant ghost avatar %q, got %#v", defaultAIAssistantAvatarMXC, member.UserInfo)
+	}
+}
+
+func TestModelRoomDescriptionUsesDisplayName(t *testing.T) {
+	provider := aiid.ProviderConfig{ID: "local", DisplayName: "Local"}
+	model := ai.Model{ID: "small", Name: "Small Chat"}
+	if got := modelRoomDescription(provider, model); got != "AI Chat with Small Chat" {
+		t.Fatalf("unexpected model room description %q", got)
 	}
 }
 

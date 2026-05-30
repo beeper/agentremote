@@ -47,8 +47,13 @@ var roomCaps = &event.RoomFeatures{
 	TypingNotifications: true,
 }
 
-func roomFeaturesForModel(model ai.Model) *event.RoomFeatures {
+func roomFeaturesForModel(model ai.Model, supportsAIState bool) *event.RoomFeatures {
 	caps := roomCaps.Clone()
+	if !supportsAIState {
+		delete(caps.State, aiid.RoomToolsType)
+		delete(caps.State, aiid.RoomModelType)
+		delete(caps.State, aiid.RoomPromptType)
+	}
 	if isImageModel(model) {
 		caps.File[event.MsgImage] = imageFileFeatures()
 	}
@@ -137,16 +142,17 @@ func (c *Connector) GetCapabilities() *bridgev2.NetworkGeneralCapabilities {
 }
 
 func (cl *Client) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
+	supportsAIState := cl != nil && cl.Main != nil && cl.Main.aiRoomStateStore().canRead()
 	if cl == nil || cl.Main == nil || cl.UserLogin == nil || portal == nil || portal.Portal == nil || portal.MXID == "" {
-		return roomFeaturesForModel(ai.Model{})
+		return roomFeaturesForModel(ai.Model{}, supportsAIState)
 	}
 	roomConfig, _, err := cl.Main.ReadRoomConfig(ctx, portal.MXID)
 	if err != nil {
-		return roomFeaturesForModel(ai.Model{})
+		return roomFeaturesForModel(ai.Model{}, supportsAIState)
 	}
 	provider, modelID, err := cl.resolveProvider(ctx, roomConfig)
 	if err != nil {
-		return roomFeaturesForModel(ai.Model{})
+		return roomFeaturesForModel(ai.Model{}, supportsAIState)
 	}
-	return roomFeaturesForModel(cl.Main.ModelForProvider(provider, modelID))
+	return roomFeaturesForModel(cl.Main.ModelForProvider(provider, modelID), supportsAIState)
 }

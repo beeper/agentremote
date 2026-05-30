@@ -78,13 +78,12 @@ func (cl *ProviderLoginClient) GetUserInfo(ctx context.Context, ghost *bridgev2.
 			return parent.GetUserInfo(ctx, ghost)
 		}
 	}
-	name := "AI"
-	isBot := true
-	return &bridgev2.UserInfo{Name: &name, IsBot: &isBot}, nil
+	return aiAssistantUserInfo(), nil
 }
 
 func (cl *ProviderLoginClient) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
-	return roomFeaturesForModel(ai.Model{})
+	supportsAIState := cl != nil && cl.Main != nil && cl.Main.aiRoomStateStore().canRead()
+	return roomFeaturesForModel(ai.Model{}, supportsAIState)
 }
 
 func (cl *ProviderLoginClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {

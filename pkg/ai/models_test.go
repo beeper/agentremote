@@ -45,6 +45,14 @@ func TestGetSupportedThinkingLevels(t *testing.T) {
 			t.Fatalf("expected levels %#v, got %#v", want, got)
 		}
 	}
+
+	mandatory := Model{Reasoning: true, ThinkingLevelMap: map[ModelThinkingLevel]*string{
+		ModelThinkingLevelOff: nil,
+	}}
+	got = GetSupportedThinkingLevels(mandatory)
+	if len(got) == 0 || got[0] == ModelThinkingLevelOff {
+		t.Fatalf("expected off to be omitted for mandatory reasoning model, got %#v", got)
+	}
 }
 
 func TestClampThinkingLevel(t *testing.T) {

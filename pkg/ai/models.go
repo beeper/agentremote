@@ -49,6 +49,9 @@ func GetSupportedThinkingLevels(model Model) []ModelThinkingLevel {
 	levels := make([]ModelThinkingLevel, 0, len(extendedThinkingLevels))
 	for _, level := range extendedThinkingLevels {
 		if level == ModelThinkingLevelOff {
+			if mapped, ok := model.ThinkingLevelMap[level]; ok && mapped == nil {
+				continue
+			}
 			levels = append(levels, level)
 			continue
 		}

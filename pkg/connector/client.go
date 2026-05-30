@@ -162,12 +162,7 @@ func (cl *Client) GetChatInfo(ctx context.Context, portal *bridgev2.Portal) (*br
 }
 
 func (cl *Client) GetUserInfo(ctx context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
-	isBot := true
-	name := "AI"
-	return &bridgev2.UserInfo{
-		Name:  &name,
-		IsBot: &isBot,
-	}, nil
+	return aiAssistantUserInfo(), nil
 }
 
 func (cl *Client) CreateGroup(ctx context.Context, params *bridgev2.GroupCreateParams) (*bridgev2.CreateChatResponse, error) {
@@ -303,7 +298,7 @@ func (cl *Client) startAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMess
 	options := harness.AgentHarnessOptions{
 		Session:             agentSession,
 		Model:               model,
-		ThinkingLevel:       agent.ThinkingLevel(cl.reasoningLevel(roomConfig)),
+		ThinkingLevel:       agent.ThinkingLevel(cl.reasoningLevelForModel(model, roomConfig)),
 		SystemPrompt:        cl.systemPrompt(roomConfig),
 		Tools:               cl.chatTools(msg, portalMeta, roomConfig, provider, model, prompt),
 		StreamFn:            streamFn,
@@ -415,28 +410,6 @@ func fillAssistantMetadata(metadata *aiid.MessageMetadata, entryID string, provi
 	metadata.Usage = assistantMessage.Usage
 	metadata.StopReason = string(assistantMessage.StopReason)
 	metadata.StreamStatus = "done"
-}
-
-func (cl *Client) updateAssistantMessageMetadata(ctx context.Context, portalKey networkid.PortalKey, messageID networkid.MessageID, metadata *aiid.MessageMetadata) {
-	if cl.Main == nil || cl.Main.Bridge == nil || cl.Main.Bridge.DB == nil || cl.Main.Bridge.DB.Message == nil {
-		return
-	}
-	for attempt := 0; attempt < 20; attempt++ {
-		dbMessage, err := cl.Main.Bridge.DB.Message.GetPartByID(ctx, portalKey.Receiver, messageID, aiid.PartID("text"))
-		if err != nil {
-			return
-		}
-		if dbMessage != nil {
-			dbMessage.Metadata = metadata
-			_ = cl.Main.Bridge.DB.Message.Update(ctx, dbMessage)
-			return
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
 }
 
 func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessage, portalMeta *aiid.PortalMetadata, provider aiid.ProviderConfig, model ai.Model, agentSession *session.Session, streamPublisher bridgev2.BeeperStreamPublisher, agentHarness *harness.AgentHarness, active *activeAIRun, prompt msgconv.MatrixPrompt) {
@@ -715,10 +688,10 @@ func (cl *Client) HandleMatrixDisappearingTimer(ctx context.Context, msg *bridge
 
 func (cl *Client) ensureUsablePortal(portal *bridgev2.Portal) error {
 	if portal == nil {
-		return fmt.Errorf("missing portal")
+		return wrapNoAIChatError("missing portal")
 	}
 	if portal.Receiver != "" && portal.Receiver != cl.UserLogin.ID {
-		return fmt.Errorf("portal receiver %s does not match login %s", portal.Receiver, cl.UserLogin.ID)
+		return wrapNoAIChatError("portal receiver %s does not match login %s", portal.Receiver, cl.UserLogin.ID)
 	}
 	return nil
 }
@@ -801,26 +774,32 @@ func (cl *Client) applyModelProfile(ctx context.Context, content *event.MessageE
 		return
 	}
 	displayName := modelID
+	profileID := string(aiid.ModelContactID(providerID, modelID))
 	var avatarURL *id.ContentURIString
-	if loginMeta := cl.loginMetadata(); loginMeta != nil {
-		if provider, ok := loginMeta.Providers[providerID]; ok {
-			if refreshed, err := cl.providerWithCatalogModelsStrict(ctx, provider); err == nil {
-				provider = refreshed
+	if provider, ok := cl.providers()[providerID]; ok {
+		if refreshed, err := cl.providerWithCatalogModelsStrict(ctx, provider); err == nil {
+			provider = refreshed
+		}
+		model := ai.Model{ID: modelID, Name: modelID}
+		if resolved, ok := resolveModelForProvider(provider, modelID); ok {
+			model = resolved
+		} else if cl.Main != nil {
+			model = cl.Main.ModelForProvider(provider, modelID)
+		}
+		displayName = modelDisplayName(provider, model)
+		profileID = string(aiid.ModelContactID(provider.ID, model.ID))
+		if ghost, err := updateModelGhostInfo(ctx, cl.bridge(), provider, model); err == nil {
+			profileID = string(ghost.ID)
+			if ghost.Name != "" {
+				displayName = ghost.Name
 			}
-			model := ai.Model{ID: modelID, Name: modelID}
-			if resolved, ok := resolveModelForProvider(provider, modelID); ok {
-				model = resolved
-			} else if cl.Main != nil {
-				model = cl.Main.ModelForProvider(provider, modelID)
-			}
-			displayName = modelDisplayName(provider, model)
-			if mxc := cl.ensureModelAvatar(ctx, provider, model); mxc != "" {
-				avatarURL = &mxc
+			if ghost.AvatarMXC != "" {
+				avatarURL = &ghost.AvatarMXC
 			}
 		}
 	}
 	content.BeeperPerMessageProfile = &event.BeeperPerMessageProfile{
-		ID:          providerID + "/" + modelID,
+		ID:          profileID,
 		Displayname: displayName,
 		AvatarURL:   avatarURL,
 		HasFallback: true,
@@ -1700,7 +1679,6 @@ func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, provide
 
 	fillAssistantMetadata(stream.metadata, stream.entryID, providerID, modelID, stream.runID, message)
 	appendToolOutputs(stream.run, stream.tools)
-	go cl.updateAssistantMessageMetadata(context.WithoutCancel(ctx), r.portalKey, stream.messageID, stream.metadata)
 	cl.queueAssistantFinal(r.portalKey, stream.messageID, stream.eventID, providerID, modelID, stream.runID, *stream.run, message, stream.metadata)
 	cl.queueAssistantMediaMessages(r.portalKey, providerID, modelID, stream.runID, message)
 }

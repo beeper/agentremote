@@ -31,7 +31,7 @@ func (cl *Client) chatTools(msg *bridgev2.MatrixMessage, meta *aiid.PortalMetada
 		LoginID:         string(cl.UserLogin.ID),
 		ProviderID:      provider.ID,
 		ModelID:         model.ID,
-		ReasoningLevel:  cl.reasoningLevel(roomConfig),
+		ReasoningLevel:  cl.reasoningLevelForModel(model, roomConfig),
 		DisabledTools:   roomConfig.DisabledTools,
 		AttachmentCount: len(prompt.Attachments),
 	}
@@ -90,21 +90,52 @@ func (cl *Client) systemPrompt(roomConfig RoomConfig) string {
 	}
 }
 
-func (cl *Client) reasoningLevel(roomConfig RoomConfig) string {
+func (cl *Client) configuredReasoningLevel(model ai.Model, roomConfig RoomConfig) string {
 	if roomConfig.ThinkingLevel != "" {
 		return roomConfig.ThinkingLevel
+	}
+	if model.DefaultThinkingLevel != "" {
+		return string(model.DefaultThinkingLevel)
 	}
 	return cl.Main.Config.DefaultReasoningLevel
 }
 
+func (cl *Client) reasoningLevelForModel(model ai.Model, roomConfig RoomConfig) string {
+	level := ai.ModelThinkingLevel(cl.configuredReasoningLevel(model, roomConfig))
+	if roomConfig.ThinkingLevel == "" {
+		level = clampRoomReasoningLevel(model, level)
+	}
+	return string(level)
+}
+
 func (cl *Client) validateReasoningLevel(model ai.Model, roomConfig RoomConfig) error {
-	level := ai.ModelThinkingLevel(cl.reasoningLevel(roomConfig))
+	rawLevel := cl.configuredReasoningLevel(model, roomConfig)
+	if !validRoomReasoningLevel(rawLevel) {
+		return fmt.Errorf("reasoning level %q is invalid", rawLevel)
+	}
+	level := ai.ModelThinkingLevel(rawLevel)
+	if roomConfig.ThinkingLevel == "" {
+		level = clampRoomReasoningLevel(model, level)
+	}
 	for _, supported := range ai.GetSupportedThinkingLevels(model) {
 		if supported == level {
 			return nil
 		}
 	}
 	return fmt.Errorf("model %s does not support reasoning level %q", model.ID, level)
+}
+
+func clampRoomReasoningLevel(model ai.Model, level ai.ModelThinkingLevel) ai.ModelThinkingLevel {
+	return ai.ClampThinkingLevel(model, level)
+}
+
+func roomThinkingLevelSupported(model ai.Model, want ai.ModelThinkingLevel) bool {
+	for _, supported := range ai.GetSupportedThinkingLevels(model) {
+		if supported == want {
+			return true
+		}
+	}
+	return false
 }
 
 func toolDisabled(disabled []string, name string) bool {

@@ -131,19 +131,20 @@ type ImagesOptions struct {
 }
 
 type Model struct {
-	ID               string                         `json:"id"`
-	Name             string                         `json:"name"`
-	API              Api                            `json:"api"`
-	Provider         Provider                       `json:"provider"`
-	BaseURL          string                         `json:"baseUrl"`
-	Reasoning        bool                           `json:"reasoning"`
-	ThinkingLevelMap map[ModelThinkingLevel]*string `json:"thinkingLevelMap,omitempty"`
-	Input            []string                       `json:"input"`
-	Cost             ModelCost                      `json:"cost"`
-	ContextWindow    int                            `json:"contextWindow"`
-	MaxTokens        int                            `json:"maxTokens"`
-	Headers          map[string]string              `json:"headers,omitempty"`
-	Compat           map[string]any                 `json:"compat,omitempty"`
+	ID                   string                         `json:"id"`
+	Name                 string                         `json:"name"`
+	API                  Api                            `json:"api"`
+	Provider             Provider                       `json:"provider"`
+	BaseURL              string                         `json:"baseUrl"`
+	Reasoning            bool                           `json:"reasoning"`
+	ThinkingLevelMap     map[ModelThinkingLevel]*string `json:"thinkingLevelMap,omitempty"`
+	DefaultThinkingLevel ModelThinkingLevel             `json:"defaultThinkingLevel,omitempty"`
+	Input                []string                       `json:"input"`
+	Cost                 ModelCost                      `json:"cost"`
+	ContextWindow        int                            `json:"contextWindow"`
+	MaxTokens            int                            `json:"maxTokens"`
+	Headers              map[string]string              `json:"headers,omitempty"`
+	Compat               map[string]any                 `json:"compat,omitempty"`
 }
 
 type ImagesModel struct {

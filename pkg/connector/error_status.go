@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"reflect"
@@ -11,6 +12,21 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
 )
+
+func errNoAIChat() bridgev2.MessageStatus {
+	return bridgev2.WrapErrorInStatus(errors.New("room is not an AI chat")).
+		WithStatus(event.MessageStatusFail).
+		WithErrorReason(event.MessageStatusUnsupported).
+		WithMessage("This room is not linked to an AI chat. Start a new AI chat or recreate this portal.").
+		WithIsCertain(true).
+		WithSendNotice(true)
+}
+
+func wrapNoAIChatError(format string, args ...any) bridgev2.MessageStatus {
+	status := errNoAIChat()
+	status.InternalError = fmt.Errorf(format, args...)
+	return status
+}
 
 func matrixMessageStatusForAIError(err error) bridgev2.MessageStatus {
 	status := bridgev2.WrapErrorInStatus(err)

@@ -95,8 +95,8 @@ func TestCurrentCommandResponseText(t *testing.T) {
 
 func TestCommandResponseContentIsVisibleText(t *testing.T) {
 	content := commandResponseContent(aiSlashCommandHelp(""))
-	if content.MsgType != event.MsgNotice {
-		t.Fatalf("command response msgtype=%s, want %s", content.MsgType, event.MsgNotice)
+	if content.MsgType != event.MsgText {
+		t.Fatalf("command response msgtype=%s, want %s", content.MsgType, event.MsgText)
 	}
 	if content.Format != event.FormatHTML {
 		t.Fatalf("command response format=%s, want %s", content.Format, event.FormatHTML)
@@ -143,12 +143,12 @@ func TestResolveCanonicalRoomModelPreservesFullProviderModel(t *testing.T) {
 }
 
 func TestRoomReasoningValidationSyntax(t *testing.T) {
-	for _, level := range []string{"", "off", "low", "medium", "high"} {
+	for _, level := range []string{"", "off", "minimal", "low", "medium", "high", "xhigh"} {
 		if !validRoomReasoningLevel(level) {
 			t.Fatalf("expected %q to be valid", level)
 		}
 	}
-	for _, level := range []string{"minimal", "xhigh", "banana"} {
+	for _, level := range []string{"xlow", "banana"} {
 		if validRoomReasoningLevel(level) {
 			t.Fatalf("expected %q to be invalid", level)
 		}

@@ -11,16 +11,13 @@ import (
 	"maunium.net/go/mautrix/id"
 )
 
-func (cl *Client) ensureModelAvatar(ctx context.Context, provider aiid.ProviderConfig, model ai.Model) id.ContentURIString {
-	if ctx == nil || cl == nil || cl.Main == nil || cl.Main.Bridge == nil || modelAvatar(provider, model) == nil {
-		return ""
+const defaultAIAssistantAvatarMXC = "mxc://beeper.com/51a668657dd9e0132cc823ad9402c6c2d0fc3321"
+
+func defaultAIAssistantAvatar() *bridgev2.Avatar {
+	return &bridgev2.Avatar{
+		ID:  networkid.AvatarID(defaultAIAssistantAvatarMXC),
+		MXC: id.ContentURIString(defaultAIAssistantAvatarMXC),
 	}
-	ghost, err := cl.Main.Bridge.GetGhostByID(ctx, aiid.ModelContactID(provider.ID, model.ID))
-	if err != nil || ghost == nil {
-		return ""
-	}
-	ghost.UpdateInfo(ctx, modelUserInfo(provider, model))
-	return ghost.AvatarMXC
 }
 
 func modelAvatar(provider aiid.ProviderConfig, model ai.Model) *bridgev2.Avatar {

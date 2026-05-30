@@ -35,6 +35,9 @@ func TestProviderLoginUsesParentGhostIdentity(t *testing.T) {
 	if info.Name == nil || *info.Name != "AI" {
 		t.Fatalf("expected shared AI ghost info, got %#v", info)
 	}
+	if info.Avatar == nil || string(info.Avatar.MXC) != defaultAIAssistantAvatarMXC {
+		t.Fatalf("expected shared AI ghost avatar %q, got %#v", defaultAIAssistantAvatarMXC, info)
+	}
 }
 
 func TestConnectProviderLoginConnectsExistingProviderAccount(t *testing.T) {
