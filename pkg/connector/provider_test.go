@@ -232,6 +232,14 @@ func TestDefaultProviderBaseURLUsesExternalLocaltestServiceForSelfHosted(t *test
 	}
 }
 
+func TestDefaultProviderBaseURLRejectsUserHomeserverMismatch(t *testing.T) {
+	conn := &Connector{HomeserverURL: "https://matrix.beeper.com/_hungryserv/bridge-user"}
+	provider := conn.defaultProviderConfig("@alice:evil.example")
+	if provider.BaseURL != "" {
+		t.Fatalf("expected no default provider route for mismatched user homeserver, got %q", provider.BaseURL)
+	}
+}
+
 func TestDefaultProviderIgnoresPersistedMetadata(t *testing.T) {
 	conn := &Connector{}
 	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{

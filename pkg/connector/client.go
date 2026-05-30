@@ -24,6 +24,7 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 	aibridgev2 "github.com/beeper/ai-bridge/pkg/ai-stream/bridgev2"
+	aimatrix "github.com/beeper/ai-bridge/pkg/ai-stream/matrix"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/beeper/ai-bridge/pkg/msgconv"
 	"github.com/rs/zerolog"
@@ -44,6 +45,7 @@ type Client struct {
 	activeMu        sync.Mutex
 	activeHarnesses map[networkid.PortalKey]*harness.AgentHarness
 	activeRuns      map[networkid.PortalKey]*activeAIRun
+	providerAuthMu  sync.Mutex
 }
 
 func aguiFinishReasonFromAI(reason ai.StopReason) string {
@@ -729,7 +731,7 @@ func (cl *Client) assistantEvent(ctx context.Context, portalKey networkid.Portal
 	return msg, metadata
 }
 
-func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, run aistream.Run, message ai.Message, metadata *aiid.MessageMetadata) *simplevent.Message[*aistream.Run] {
+func finalizedAssistantRun(run aistream.Run, message ai.Message) aistream.Run {
 	if message.StopReason == ai.StopReasonError {
 		run.Status = aistream.Status{State: "error", Error: map[string]any{"message": message.ErrorMessage}}
 	} else if run.Status.State == "streaming" {
@@ -739,7 +741,17 @@ func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID ne
 	if run.Preview.Text == "" {
 		run.Preview = aistream.PreviewFromText(msgconv.AssistantText(message), aistream.PreviewBudgetBytes)
 	}
-	edit := aibridgev2.FinalMetadataEdit(portalKey, aiid.AssistantUserID(), messageID, run, time.Now())
+	return run
+}
+
+func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, run aistream.Run, message ai.Message, metadata *aiid.MessageMetadata) *simplevent.Message[*aistream.Run] {
+	run = finalizedAssistantRun(run, message)
+	projection := aimatrix.ProjectFinal(run)
+	return cl.assistantFinalEditWithProjection(portalKey, messageID, providerID, modelID, runID, run, projection, metadata)
+}
+
+func (cl *Client) assistantFinalEditWithProjection(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, run aistream.Run, projection aimatrix.FinalProjection, metadata *aiid.MessageMetadata) *simplevent.Message[*aistream.Run] {
+	edit := aibridgev2.FinalMetadataEditWithContent(portalKey, aiid.AssistantUserID(), messageID, run, projection.Content, projection.Extra, time.Now())
 	originalConvert := edit.ConvertEditFunc
 	edit.ConvertEditFunc = func(ctx context.Context, portal *bridgev2.Portal, intent bridgev2.MatrixAPI, existing []*database.Message, data *aistream.Run) (*bridgev2.ConvertedEdit, error) {
 		converted, err := originalConvert(ctx, portal, intent, existing, data)
@@ -761,12 +773,14 @@ func (cl *Client) queueAssistantFinal(portalKey networkid.PortalKey, messageID n
 	if cl == nil || cl.UserLogin == nil {
 		return
 	}
+	run = finalizedAssistantRun(run, message)
+	projection := aimatrix.ProjectFinal(run)
 	if targetEventID != "" {
-		for _, segment := range aibridgev2.FinalSegments(portalKey, aiid.AssistantUserID(), run, targetEventID, time.Now()) {
+		for _, segment := range aibridgev2.FinalSegmentMessages(portalKey, aiid.AssistantUserID(), run, projection.Segments, targetEventID, time.Now()) {
 			cl.UserLogin.QueueRemoteEvent(segment)
 		}
 	}
-	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEdit(portalKey, messageID, providerID, modelID, runID, run, message, metadata))
+	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEditWithProjection(portalKey, messageID, providerID, modelID, runID, run, projection, metadata))
 }
 
 func (cl *Client) applyModelProfile(ctx context.Context, content *event.MessageEventContent, providerID string, modelID string) {

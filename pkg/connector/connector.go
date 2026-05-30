@@ -101,17 +101,30 @@ func (c *Connector) defaultProviderConfig(userMXID id.UserID) aiid.ProviderConfi
 }
 
 func (c *Connector) defaultAIServicesOpenAIProxyBaseURL(userMXID id.UserID) string {
-	domain := userMXID.Homeserver()
-	if domain == "" {
-		return ""
+	userDomain := userMXID.Homeserver()
+	bridgeHost := c.homeserverAddressHost()
+	if bridgeHost == "megahungry-proxy.megahungry" {
+		if userDomain != "" && userDomain != "beeper.localtest.me" {
+			return ""
+		}
+		return "http://ai-services.beeper" + defaultAIServicesProxyPath
 	}
-	if domain == "beeper.localtest.me" {
-		if c != nil && c.homeserverAddressHost() == "megahungry-proxy.megahungry" {
-			return "http://ai-services.beeper" + defaultAIServicesProxyPath
+	domain := homeserverServiceDomain(bridgeHost)
+	if domain != "" {
+		if userDomain != "" && userDomain != domain {
+			return ""
 		}
 		return "https://ai-services." + domain + defaultAIServicesProxyPath
 	}
-	return "https://ai-services." + domain + defaultAIServicesProxyPath
+	if userDomain == "" {
+		return ""
+	}
+	return "https://ai-services." + userDomain + defaultAIServicesProxyPath
+}
+
+func homeserverServiceDomain(host string) string {
+	host = strings.TrimPrefix(host, "matrix.")
+	return host
 }
 
 func (c *Connector) homeserverAddressHost() string {

@@ -11,6 +11,12 @@ import (
 
 const ApprovalRelationType = event.RelationType("com.beeper.ai.approval")
 
+type FinalProjection struct {
+	Content  *event.MessageEventContent
+	Extra    map[string]any
+	Segments []aistream.FinalSegment
+}
+
 func AnchorContent(run aistream.Run) (*event.MessageEventContent, map[string]any) {
 	content := previewContent(run)
 	extra := map[string]any{
@@ -19,13 +25,18 @@ func AnchorContent(run aistream.Run) (*event.MessageEventContent, map[string]any
 	return content, extra
 }
 
-func FinalContent(run aistream.Run) (*event.MessageEventContent, map[string]any) {
+func ProjectFinal(run aistream.Run) FinalProjection {
 	uiMessage, segments := aistream.FinalUIMessageContent(run, aistream.FinalMessageBudgetBytes)
 	content := previewContent(run)
 	extra := map[string]any{
 		aistream.BeeperAIKey: finalAIContent(run, uiMessage, len(segments)),
 	}
-	return content, extra
+	return FinalProjection{Content: content, Extra: extra, Segments: segments}
+}
+
+func FinalContent(run aistream.Run) (*event.MessageEventContent, map[string]any) {
+	projection := ProjectFinal(run)
+	return projection.Content, projection.Extra
 }
 
 func finalAIContent(run aistream.Run, message aistream.UIMessage, segmentCount int) aistream.BeeperAI {
@@ -38,8 +49,7 @@ func finalAIContent(run aistream.Run, message aistream.UIMessage, segmentCount i
 }
 
 func FinalSegments(run aistream.Run) []aistream.FinalSegment {
-	_, segments := aistream.FinalUIMessageContent(run, aistream.FinalMessageBudgetBytes)
-	return segments
+	return ProjectFinal(run).Segments
 }
 
 func previewContent(run aistream.Run) *event.MessageEventContent {

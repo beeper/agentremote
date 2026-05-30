@@ -320,7 +320,9 @@ func (c *Connector) UpsertProviderLogin(ctx context.Context, user *bridgev2.User
 		if err = cached.Save(ctx); err != nil {
 			return nil, err
 		}
-		c.connectProviderLogin(ctx, cached)
+		if err = c.connectProviderLogin(ctx, cached); err != nil {
+			return nil, err
+		}
 		return cached, nil
 	}
 	login, err := user.NewLogin(ctx, &database.UserLogin{
@@ -334,7 +336,9 @@ func (c *Connector) UpsertProviderLogin(ctx context.Context, user *bridgev2.User
 	if err != nil {
 		return nil, err
 	}
-	c.connectProviderLogin(ctx, login)
+	if err = c.connectProviderLogin(ctx, login); err != nil {
+		return nil, err
+	}
 	return login, nil
 }
 
@@ -354,16 +358,19 @@ func (c *Connector) addProviderToLogin(ctx context.Context, login *bridgev2.User
 	return login.Save(ctx)
 }
 
-func (c *Connector) connectProviderLogin(ctx context.Context, login *bridgev2.UserLogin) {
+func (c *Connector) connectProviderLogin(ctx context.Context, login *bridgev2.UserLogin) error {
 	if login == nil {
-		return
+		return nil
 	}
 	if login.Client == nil {
-		_ = c.LoadUserLogin(ctx, login)
+		if err := c.LoadUserLogin(ctx, login); err != nil {
+			return err
+		}
 	}
 	if login.Client != nil {
 		login.Client.Connect(ctx)
 	}
+	return nil
 }
 
 func customProviderConfig(providerID string, displayName string, baseURL string, apiKey string, defaultModel string, modelList string) aiid.ProviderConfig {

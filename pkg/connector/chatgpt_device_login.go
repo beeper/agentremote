@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	ai "github.com/beeper/ai-bridge/pkg/ai"
@@ -21,7 +22,7 @@ const (
 	chatGPTDeviceLoginStepID        = "com.beeper.ai.login.chatgpt.device"
 	chatGPTClientID                 = "app_EMoamEEZ73f0CkXaXp7hrann"
 	chatGPTDeviceCodeTimeoutSeconds = 15 * 60
-	chatGPTProviderID               = string(ai.ProviderOpenAICodex)
+	chatGPTProviderID               = "com.beeper.ai.provider.chatgpt"
 	chatGPTProviderName             = "ChatGPT"
 	chatGPTCodexBaseURL             = "https://chatgpt.com/backend-api"
 )
@@ -36,9 +37,11 @@ var (
 )
 
 type ChatGPTDeviceLogin struct {
-	Main   *Connector
-	User   *bridgev2.User
-	device chatGPTDeviceAuthInfo
+	Main       *Connector
+	User       *bridgev2.User
+	device     chatGPTDeviceAuthInfo
+	cancelMu   sync.Mutex
+	cancelWait context.CancelFunc
 }
 
 var _ bridgev2.LoginProcessDisplayAndWait = (*ChatGPTDeviceLogin)(nil)
@@ -60,7 +63,13 @@ func (l *ChatGPTDeviceLogin) Start(ctx context.Context) (*bridgev2.LoginStep, er
 }
 
 func (l *ChatGPTDeviceLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error) {
-	token, err := pollChatGPTDeviceAuth(ctx, l.device)
+	waitCtx, cancel := context.WithCancel(ctx)
+	l.setCancel(cancel)
+	defer func() {
+		cancel()
+		l.setCancel(nil)
+	}()
+	token, err := pollChatGPTDeviceAuth(waitCtx, l.device)
 	if err != nil {
 		return nil, err
 	}
@@ -87,7 +96,20 @@ func (l *ChatGPTDeviceLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, err
 	}, nil
 }
 
-func (l *ChatGPTDeviceLogin) Cancel() {}
+func (l *ChatGPTDeviceLogin) Cancel() {
+	l.cancelMu.Lock()
+	cancel := l.cancelWait
+	l.cancelMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (l *ChatGPTDeviceLogin) setCancel(cancel context.CancelFunc) {
+	l.cancelMu.Lock()
+	defer l.cancelMu.Unlock()
+	l.cancelWait = cancel
+}
 
 type chatGPTDeviceAuthInfo struct {
 	DeviceAuthID    string
@@ -214,6 +236,9 @@ func pollChatGPTDeviceAuthOnce(ctx context.Context, device chatGPTDeviceAuthInfo
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := chatGPTHTTPClient.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return chatGPTDeviceToken{}, false, false, ctx.Err()
+		}
 		return chatGPTDeviceToken{}, false, false, fmt.Errorf("failed to poll ChatGPT device login: %w", err)
 	}
 	defer resp.Body.Close()
@@ -232,7 +257,7 @@ func pollChatGPTDeviceAuthOnce(ctx context.Context, device chatGPTDeviceAuthInfo
 	}
 	responseText, _ := io.ReadAll(resp.Body)
 	errorCode := chatGPTErrorCode(string(responseText))
-	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound || errorCode == "deviceauth_authorization_pending" {
+	if errorCode == "deviceauth_authorization_pending" {
 		return chatGPTDeviceToken{}, true, false, nil
 	}
 	if errorCode == "slow_down" {
@@ -276,10 +301,10 @@ func refreshChatGPTCredentials(ctx context.Context, refreshToken string) (chatGP
 		"refresh_token": {refreshToken},
 		"client_id":     {chatGPTClientID},
 	}
-	return requestChatGPTToken(ctx, form, "refresh")
+	return requestChatGPTToken(ctx, form, "refresh", refreshToken)
 }
 
-func requestChatGPTToken(ctx context.Context, form url.Values, operation string) (chatGPTCredentials, error) {
+func requestChatGPTToken(ctx context.Context, form url.Values, operation string, fallbackRefreshToken ...string) (chatGPTCredentials, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, chatGPTTokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return chatGPTCredentials{}, err
@@ -302,7 +327,10 @@ func requestChatGPTToken(ctx context.Context, form url.Values, operation string)
 	if err = json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return chatGPTCredentials{}, fmt.Errorf("failed to parse ChatGPT token response: %w", err)
 	}
-	if body.AccessToken == "" || body.RefreshToken == "" || body.ExpiresIn <= 0 {
+	if body.RefreshToken == "" && operation == "refresh" && len(fallbackRefreshToken) > 0 {
+		body.RefreshToken = fallbackRefreshToken[0]
+	}
+	if body.AccessToken == "" || body.ExpiresIn <= 0 || body.RefreshToken == "" {
 		return chatGPTCredentials{}, fmt.Errorf("ChatGPT token %s response missing access_token, refresh_token or expires_in", operation)
 	}
 	accountID, err := providers.ExtractCodexAccountID(body.AccessToken)

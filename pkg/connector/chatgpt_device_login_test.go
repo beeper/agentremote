@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -111,7 +112,7 @@ func TestChatGPTDeviceTokenExchangeBuildsCodexProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if provider.ID != string(ai.ProviderOpenAICodex) || provider.API != ai.ApiOpenAICodexResponses || provider.Provider != ai.ProviderOpenAICodex {
+	if provider.ID != chatGPTProviderID || provider.API != ai.ApiOpenAICodexResponses || provider.Provider != ai.ProviderOpenAICodex {
 		t.Fatalf("unexpected provider route %#v", provider)
 	}
 	if provider.BaseURL != chatGPTCodexBaseURL || provider.APIKey != access || provider.RefreshToken != "refresh-1" || provider.DefaultModel == "" {
@@ -154,6 +155,88 @@ func TestChatGPTProviderAuthRefreshesExpiredToken(t *testing.T) {
 	}
 	if auth.APIKey != refreshedAccess {
 		t.Fatalf("expected refreshed access token, got %q", auth.APIKey)
+	}
+}
+
+func TestChatGPTRefreshReusesExistingRefreshTokenWhenNotRotated(t *testing.T) {
+	refreshedAccess := chatGPTTestToken("acct_789")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/oauth/token" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		assertFormValue(t, r.Form, "grant_type", "refresh_token")
+		assertFormValue(t, r.Form, "refresh_token", "refresh-old")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": refreshedAccess,
+			"expires_in":   3600,
+		})
+	}))
+	defer server.Close()
+	restore := overrideChatGPTEndpoints(t, server.URL)
+	defer restore()
+
+	credentials, err := refreshChatGPTCredentials(t.Context(), "refresh-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credentials.AccessToken != refreshedAccess || credentials.RefreshToken != "refresh-old" {
+		t.Fatalf("unexpected credentials %#v", credentials)
+	}
+}
+
+func TestChatGPTDevicePollReturnsTerminalHTTPError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "expired_token"}})
+	}))
+	defer server.Close()
+	restore := overrideChatGPTEndpoints(t, server.URL)
+	defer restore()
+
+	_, pending, _, err := pollChatGPTDeviceAuthOnce(t.Context(), chatGPTDeviceAuthInfo{DeviceAuthID: "device-1", UserCode: "ABCD"})
+	if err == nil || pending || !strings.Contains(err.Error(), "HTTP 403") {
+		t.Fatalf("expected terminal HTTP error, pending=%v err=%v", pending, err)
+	}
+}
+
+func TestChatGPTDeviceLoginCancelStopsWait(t *testing.T) {
+	polled := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-polled:
+		default:
+			close(polled)
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "deviceauth_authorization_pending"})
+	}))
+	defer server.Close()
+	restore := overrideChatGPTEndpoints(t, server.URL)
+	defer restore()
+
+	login := &ChatGPTDeviceLogin{device: chatGPTDeviceAuthInfo{
+		DeviceAuthID: "device-1",
+		UserCode:     "ABCD",
+		Interval:     time.Hour,
+		ExpiresIn:    time.Hour,
+	}}
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := login.Wait(context.Background())
+		errCh <- err
+	}()
+	<-polled
+	login.Cancel()
+	select {
+	case err := <-errCh:
+		if err != context.Canceled {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Wait did not stop after Cancel")
 	}
 }
 

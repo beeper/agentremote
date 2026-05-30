@@ -106,23 +106,24 @@ func normalizeProviderModel(model ai.Model, provider aiid.ProviderConfig) ai.Mod
 func (cl *Client) authForProvider(provider aiid.ProviderConfig) func(context.Context, ai.Model) (*harness.AgentHarnessAuth, error) {
 	return func(ctx context.Context, model ai.Model) (*harness.AgentHarnessAuth, error) {
 		var err error
-		provider, err = cl.refreshProviderIfNeeded(ctx, provider)
+		currentProvider := provider
+		currentProvider, err = cl.refreshProviderIfNeeded(ctx, currentProvider)
 		if err != nil {
 			return nil, err
 		}
-		apiKey := resolveConfiguredAPIKey(provider.APIKey)
-		if provider.ID == aiid.DefaultProvider {
+		apiKey := resolveConfiguredAPIKey(currentProvider.APIKey)
+		if currentProvider.ID == aiid.DefaultProvider {
 			apiKey, err = cl.defaultProviderBearerToken()
 			if err != nil {
 				return nil, err
 			}
 		}
 		if apiKey == "" {
-			return nil, fmt.Errorf("missing API key for provider %s", provider.ID)
+			return nil, fmt.Errorf("missing API key for provider %s", currentProvider.ID)
 		}
 		return &harness.AgentHarnessAuth{
 			APIKey:  apiKey,
-			Headers: provider.Headers,
+			Headers: currentProvider.Headers,
 		}, nil
 	}
 }
@@ -156,11 +157,21 @@ func (cl *Client) defaultProviderUsername() string {
 }
 
 func (cl *Client) refreshProviderIfNeeded(ctx context.Context, provider aiid.ProviderConfig) (aiid.ProviderConfig, error) {
-	if provider.API != ai.ApiOpenAICodexResponses || provider.RefreshToken == "" || provider.ExpiresAtMS == 0 {
+	if provider.ID != chatGPTProviderID || provider.RefreshToken == "" || provider.ExpiresAtMS == 0 {
 		return provider, nil
 	}
 	if time.Now().Add(2 * time.Minute).Before(time.UnixMilli(provider.ExpiresAtMS)) {
 		return provider, nil
+	}
+	if cl != nil {
+		cl.providerAuthMu.Lock()
+		defer cl.providerAuthMu.Unlock()
+		if refreshed, ok := cl.savedProviderConfig(provider.ID); ok {
+			provider = refreshed
+			if provider.RefreshToken == "" || provider.ExpiresAtMS == 0 || time.Now().Add(2*time.Minute).Before(time.UnixMilli(provider.ExpiresAtMS)) {
+				return provider, nil
+			}
+		}
 	}
 	credentials, err := refreshChatGPTCredentials(ctx, provider.RefreshToken)
 	if err != nil {
@@ -171,6 +182,15 @@ func (cl *Client) refreshProviderIfNeeded(ctx context.Context, provider aiid.Pro
 	provider.ExpiresAtMS = credentials.ExpiresAtMS
 	cl.saveProviderConfig(ctx, provider)
 	return provider, nil
+}
+
+func (cl *Client) savedProviderConfig(providerID string) (aiid.ProviderConfig, bool) {
+	meta := cl.loginMetadata()
+	if meta == nil || meta.Providers == nil || providerID == "" {
+		return aiid.ProviderConfig{}, false
+	}
+	provider, ok := meta.Providers[providerID]
+	return provider, ok
 }
 
 func (cl *Client) saveProviderConfig(ctx context.Context, provider aiid.ProviderConfig) {

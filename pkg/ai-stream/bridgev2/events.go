@@ -53,7 +53,10 @@ func Carrier(portalKey networkid.PortalKey, sender networkid.UserID, run aistrea
 }
 
 func FinalSegments(portalKey networkid.PortalKey, sender networkid.UserID, run aistream.Run, targetEventID id.EventID, timestamp time.Time) []*simplevent.PreConvertedMessage {
-	segments := aimatrix.FinalSegments(run)
+	return FinalSegmentMessages(portalKey, sender, run, aimatrix.FinalSegments(run), targetEventID, timestamp)
+}
+
+func FinalSegmentMessages(portalKey networkid.PortalKey, sender networkid.UserID, run aistream.Run, segments []aistream.FinalSegment, targetEventID id.EventID, timestamp time.Time) []*simplevent.PreConvertedMessage {
 	out := make([]*simplevent.PreConvertedMessage, 0, len(segments))
 	for i, segment := range segments {
 		content, extra := aimatrix.FinalSegmentContent(run, segment, targetEventID)
@@ -80,6 +83,10 @@ func ApprovalPrompt(portalKey networkid.PortalKey, sender networkid.UserID, ctx 
 
 func FinalMetadataEdit(portalKey networkid.PortalKey, sender networkid.UserID, messageID networkid.MessageID, run aistream.Run, timestamp time.Time) *simplevent.Message[*aistream.Run] {
 	finalContent, finalExtra := aimatrix.FinalContent(run)
+	return FinalMetadataEditWithContent(portalKey, sender, messageID, run, finalContent, finalExtra, timestamp)
+}
+
+func FinalMetadataEditWithContent(portalKey networkid.PortalKey, sender networkid.UserID, messageID networkid.MessageID, run aistream.Run, finalContent *event.MessageEventContent, finalExtra map[string]any, timestamp time.Time) *simplevent.Message[*aistream.Run] {
 	return &simplevent.Message[*aistream.Run]{
 		EventMeta:     eventMeta(bridgev2.RemoteEventEdit, portalKey, sender, timestamp),
 		Data:          &run,
