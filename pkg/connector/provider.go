@@ -27,19 +27,10 @@ func (c *Connector) ModelForProvider(provider aiid.ProviderConfig, modelID strin
 			return normalizeProviderModel(model, provider)
 		}
 	}
-	return normalizeProviderModel(modelForProviderCatalog(provider, modelID), provider)
+	return normalizeProviderModel(modelForProviderConfig(provider, modelID), provider)
 }
 
-func modelForProviderCatalog(provider aiid.ProviderConfig, modelID string) ai.Model {
-	if model, ok := ai.GetModel(provider.Provider, modelID); ok {
-		return model
-	}
-	if strings.HasPrefix(modelID, "openai/") {
-		if model, ok := ai.GetModel(ai.ProviderOpenAI, strings.TrimPrefix(modelID, "openai/")); ok {
-			model.ID = modelID
-			return model
-		}
-	}
+func modelForProviderConfig(provider aiid.ProviderConfig, modelID string) ai.Model {
 	return ai.Model{
 		ID:            modelID,
 		Name:          modelID,
@@ -53,8 +44,8 @@ func modelForProviderCatalog(provider aiid.ProviderConfig, modelID string) ai.Mo
 }
 
 func normalizeProviderModel(model ai.Model, provider aiid.ProviderConfig) ai.Model {
-	keepCatalogRoute := provider.ID == aiid.DefaultProvider && model.Provider != "" && model.Provider != provider.Provider
-	if provider.API != "" && !keepCatalogRoute {
+	keepModelRoute := model.Provider != "" && model.Provider != provider.Provider
+	if provider.API != "" && !keepModelRoute {
 		model.API = provider.API
 	} else if model.API == "" {
 		model.API = provider.API
@@ -62,7 +53,7 @@ func normalizeProviderModel(model ai.Model, provider aiid.ProviderConfig) ai.Mod
 	if model.Provider == "" {
 		model.Provider = provider.Provider
 	}
-	if provider.BaseURL != "" && !keepCatalogRoute {
+	if provider.BaseURL != "" && !keepModelRoute {
 		model.BaseURL = provider.BaseURL
 	} else if model.BaseURL == "" {
 		model.BaseURL = provider.BaseURL

@@ -109,7 +109,7 @@ func (cl *ProviderLoginClient) SearchUsers(ctx context.Context, query string) ([
 	if err != nil || !ok {
 		return nil, err
 	}
-	return providerModelContacts(ctx, cl.bridge(), provider, strings.ToLower(strings.TrimSpace(query))), nil
+	return providerModelContacts(ctx, cl.bridge(), provider, strings.TrimSpace(query)), nil
 }
 
 func (cl *ProviderLoginClient) ResolveIdentifier(ctx context.Context, identifier string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {

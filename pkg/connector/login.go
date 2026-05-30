@@ -264,32 +264,41 @@ func fetchProviderModels(ctx context.Context, api ai.Api, providerID string, bas
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("failed to fetch models: provider returned HTTP %d", resp.StatusCode)
 	}
-	var body struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
+	var body aiServicesModelListResponse
 	if err = json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return nil, fmt.Errorf("failed to parse models response: %w", err)
 	}
 	models := make([]ai.Model, 0, len(body.Data))
 	seen := map[string]bool{}
+	provider, inferredAPI := inferProviderRoute(providerID, baseURL)
+	if api != "" {
+		inferredAPI = api
+	}
+	providerConfig := aiid.ProviderConfig{
+		ID:       providerID,
+		API:      inferredAPI,
+		Provider: configuredModelProvider(providerID, provider),
+		BaseURL:  baseURL,
+	}
 	for _, item := range body.Data {
 		modelID := strings.TrimSpace(item.ID)
 		if modelID == "" || seen[modelID] {
 			continue
 		}
 		seen[modelID] = true
-		models = append(models, ai.Model{
+		model := ai.Model{
 			ID:            modelID,
-			Name:          modelID,
-			API:           api,
-			Provider:      ai.Provider(providerID),
+			Name:          item.Name,
+			API:           inferredAPI,
+			Provider:      providerConfig.Provider,
 			BaseURL:       baseURL,
-			Input:         []string{"text", "image"},
-			ContextWindow: 128000,
-			MaxTokens:     32000,
-		})
+			Reasoning:     item.reasoning(),
+			Input:         item.inputModalities(),
+			ContextWindow: item.contextWindow(),
+			MaxTokens:     item.maxTokens(),
+		}
+		model = item.applyProviderRoute(model, providerConfig)
+		models = append(models, normalizeProviderModel(model, providerConfig))
 	}
 	if len(models) == 0 {
 		return nil, fmt.Errorf("provider returned no models")
@@ -374,22 +383,17 @@ func providerLoginMetadata(parentLoginID networkid.UserLoginID, providerID strin
 func customProviderConfig(providerID string, displayName string, baseURL string, apiKey string, defaultModel string, modelList string) aiid.ProviderConfig {
 	provider, api := inferProviderRoute(providerID, baseURL)
 	modelIDs := providerModelIDs(modelList, defaultModel)
-	config := aiid.ProviderConfig{
-		ID:            providerID,
-		DisplayName:   displayName,
-		API:           api,
-		Provider:      provider,
-		BaseURL:       baseURL,
-		APIKey:        apiKey,
-		DefaultModel:  defaultModel,
-		AllowedModels: modelIDs,
-		Enabled:       true,
+	return aiid.ProviderConfig{
+		ID:           providerID,
+		DisplayName:  displayName,
+		API:          api,
+		Provider:     provider,
+		BaseURL:      baseURL,
+		APIKey:       apiKey,
+		DefaultModel: defaultModel,
+		Models:       providerModelsFromIDs(modelIDs, providerID, provider, api, baseURL),
+		Enabled:      true,
 	}
-	if _, ok := ai.GetModel(provider, defaultModel); !ok {
-		config.AllowedModels = nil
-		config.Models = providerModelsFromIDs(modelIDs, providerID, provider, api, baseURL)
-	}
-	return config
 }
 
 func inferProviderRoute(providerID string, baseURL string) (ai.Provider, ai.Api) {
@@ -431,15 +435,11 @@ func providerModelIDs(modelList string, defaultModel string) []string {
 func providerModelsFromIDs(modelIDs []string, providerID string, provider ai.Provider, api ai.Api, baseURL string) []ai.Model {
 	models := make([]ai.Model, 0, len(modelIDs))
 	for _, modelID := range modelIDs {
-		modelProvider := provider
-		if providerID != string(ai.ProviderOpenAI) && providerID != string(ai.ProviderOpenRouter) {
-			modelProvider = ai.Provider(providerID)
-		}
 		models = append(models, ai.Model{
 			ID:            modelID,
 			Name:          modelID,
 			API:           api,
-			Provider:      modelProvider,
+			Provider:      configuredModelProvider(providerID, provider),
 			BaseURL:       baseURL,
 			Input:         []string{"text", "image"},
 			ContextWindow: 128000,
@@ -447,4 +447,11 @@ func providerModelsFromIDs(modelIDs []string, providerID string, provider ai.Pro
 		})
 	}
 	return models
+}
+
+func configuredModelProvider(providerID string, provider ai.Provider) ai.Provider {
+	if providerID != string(ai.ProviderOpenAI) && providerID != string(ai.ProviderOpenRouter) {
+		return ai.Provider(providerID)
+	}
+	return provider
 }

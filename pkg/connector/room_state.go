@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/bridgev2"
@@ -90,22 +89,11 @@ func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLog
 	if !providerAllowsModel(provider, modelID) {
 		return aiid.ProviderConfig{}, "", fmt.Errorf("model %s is not available for provider %s", modelID, providerID)
 	}
-	if provider.ID != aiid.DefaultProvider && len(provider.Models) == 0 && len(provider.AllowedModels) == 0 {
-		if _, ok := ai.GetModel(provider.Provider, modelID); !ok {
-			return aiid.ProviderConfig{}, "", fmt.Errorf("model %s is not available for provider %s", modelID, providerID)
-		}
-	}
 	return provider, modelID, nil
 }
 
 func providerAllowsModel(provider aiid.ProviderConfig, modelID string) bool {
-	if len(provider.Models) > 0 {
-		return providerHasModel(provider, modelID)
-	}
-	if len(provider.AllowedModels) > 0 {
-		return slices.Contains(provider.AllowedModels, modelID)
-	}
-	return true
+	return strings.TrimSpace(modelID) != ""
 }
 
 func providerHasModel(provider aiid.ProviderConfig, modelID string) bool {

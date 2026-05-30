@@ -14,7 +14,7 @@ var ExampleConfig string
 
 const defaultAIServicesProxyPrefix = "https://ai-services."
 const defaultAIServicesProxyPath = "/proxy/openai/v1"
-const defaultBeeperAIModel = "gpt-5.5"
+const defaultBeeperAIModel = "beeper/default"
 const defaultTitleGenerationModel = "gpt-5-mini"
 const openRouterTitleGenerationModel = "openai/gpt-5-mini"
 

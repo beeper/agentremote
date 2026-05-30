@@ -356,7 +356,7 @@ func (cl *Client) titleGenerationModel(provider aiid.ProviderConfig, fallback ai
 	if cl != nil && cl.Main != nil {
 		return cl.Main.ModelForProvider(provider, modelID)
 	}
-	return normalizeProviderModel(modelForProviderCatalog(provider, modelID), provider)
+	return normalizeProviderModel(modelForProviderConfig(provider, modelID), provider)
 }
 
 func titleGenerationModelID(provider aiid.ProviderConfig) string {

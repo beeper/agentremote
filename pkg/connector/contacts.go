@@ -23,7 +23,7 @@ func (cl *Client) GetContactList(ctx context.Context) ([]*bridgev2.ResolveIdenti
 }
 
 func (cl *Client) SearchUsers(ctx context.Context, query string) ([]*bridgev2.ResolveIdentifierResponse, error) {
-	return cl.modelContacts(ctx, strings.ToLower(strings.TrimSpace(query))), nil
+	return cl.modelContacts(ctx, strings.TrimSpace(query)), nil
 }
 
 func (cl *Client) ResolveIdentifier(ctx context.Context, identifier string, createChat bool) (*bridgev2.ResolveIdentifierResponse, error) {
@@ -131,12 +131,23 @@ func (cl *Client) bridge() *bridgev2.Bridge {
 
 func providerModelContacts(ctx context.Context, br *bridgev2.Bridge, provider aiid.ProviderConfig, query string) []*bridgev2.ResolveIdentifierResponse {
 	contacts := []*bridgev2.ResolveIdentifierResponse{}
+	query = strings.TrimSpace(query)
+	lowerQuery := strings.ToLower(query)
+	seen := map[networkid.UserID]bool{}
 	for _, model := range contactModels(provider) {
 		name := strings.ToLower(modelDisplayName(provider, model))
-		if query != "" && !strings.Contains(name, query) && !strings.Contains(strings.ToLower(model.ID), query) && !strings.Contains(strings.ToLower(provider.ID), query) {
+		if lowerQuery != "" && !strings.Contains(name, lowerQuery) && !strings.Contains(strings.ToLower(model.ID), lowerQuery) && !strings.Contains(strings.ToLower(provider.ID), lowerQuery) {
 			continue
 		}
-		contacts = append(contacts, modelContactWithGhost(ctx, br, provider, model))
+		contact := modelContactWithGhost(ctx, br, provider, model)
+		seen[contact.UserID] = true
+		contacts = append(contacts, contact)
+	}
+	if model, ok := arbitraryModelForProvider(provider, query); ok {
+		contact := modelContactWithGhost(ctx, br, provider, model)
+		if !seen[contact.UserID] {
+			contacts = append(contacts, contact)
+		}
 	}
 	return contacts
 }
@@ -353,10 +364,18 @@ func modelContactWithGhost(ctx context.Context, br *bridgev2.Bridge, provider ai
 
 func resolveModelForProvider(provider aiid.ProviderConfig, identifier string) (ai.Model, bool) {
 	if providerID, modelID, ok := aiid.ParseModelContactID(aiidNetworkID(identifier)); ok {
+		if providerID != provider.ID {
+			return ai.Model{}, false
+		}
 		identifier = providerID + "/" + modelID
 	}
 	for _, model := range contactModels(provider) {
 		if identifier == string(aiid.ModelContactID(provider.ID, model.ID)) || identifier == provider.ID+"/"+model.ID || identifier == model.ID {
+			return model, true
+		}
+	}
+	if modelID, ok := strings.CutPrefix(identifier, provider.ID+"/"); ok {
+		if model, ok := arbitraryModelForProvider(provider, modelID); ok {
 			return model, true
 		}
 	}
@@ -411,21 +430,34 @@ func contactModels(provider aiid.ProviderConfig) []ai.Model {
 			if modelID == "" {
 				continue
 			}
-			models = append(models, normalizeProviderModel(modelForProviderCatalog(provider, modelID), provider))
+			models = append(models, normalizeProviderModel(modelForProviderConfig(provider, modelID), provider))
 		}
 		return models
-	}
-	if models := ai.GetModels(provider.Provider); len(models) > 0 {
-		out := make([]ai.Model, 0, len(models))
-		for _, model := range models {
-			out = append(out, normalizeProviderModel(model, provider))
-		}
-		return out
 	}
 	if provider.DefaultModel == "" {
 		return nil
 	}
-	return []ai.Model{normalizeProviderModel(modelForProviderCatalog(provider, provider.DefaultModel), provider)}
+	return []ai.Model{normalizeProviderModel(modelForProviderConfig(provider, provider.DefaultModel), provider)}
+}
+
+func arbitraryModelForProvider(provider aiid.ProviderConfig, query string) (ai.Model, bool) {
+	modelID := strings.TrimSpace(query)
+	if modelID == "" {
+		return ai.Model{}, false
+	}
+	if stripped, ok := strings.CutPrefix(modelID, provider.ID+"/"); ok {
+		modelID = strings.TrimSpace(stripped)
+	}
+	if modelID == "" {
+		return ai.Model{}, false
+	}
+	model := normalizeProviderModel(modelForProviderConfig(provider, modelID), provider)
+	displayName := provider.DisplayName
+	if displayName == "" {
+		displayName = providerDisplayName(provider.ID)
+	}
+	model.Name = displayName + ": " + modelID
+	return model, true
 }
 
 func modelDisplayName(provider aiid.ProviderConfig, model ai.Model) string {
