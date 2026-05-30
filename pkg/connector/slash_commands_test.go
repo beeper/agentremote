@@ -9,6 +9,7 @@ import (
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
+	"maunium.net/go/mautrix/event"
 )
 
 func TestParseAISlashCommand(t *testing.T) {
@@ -19,9 +20,12 @@ func TestParseAISlashCommand(t *testing.T) {
 		ok   bool
 	}{
 		{body: "/model gpt-5", name: "model", arg: "gpt-5", ok: true},
+		{body: "/model", name: "model", ok: true},
 		{body: " /reasoning high ", name: "reasoning", arg: "high", ok: true},
+		{body: "/reasoning", name: "reasoning", ok: true},
 		{body: "/reasoniing low", ok: false},
 		{body: "/system-prompt be terse", name: "system-prompt", arg: "be terse", ok: true},
+		{body: "/system-prompt", name: "system-prompt", ok: true},
 		{body: "/help model", name: "help", arg: "model", ok: true},
 		{body: "/unknown nope", ok: false},
 		{body: "hello /model gpt-5", ok: false},
@@ -68,11 +72,40 @@ func TestAISlashCommandHelpCatalogUsesDefinitions(t *testing.T) {
 
 func TestAISlashCommandHelpForSpecificCommand(t *testing.T) {
 	help := aiSlashCommandHelp("/model")
-	if !strings.Contains(help, "Usage: /model <model>") {
+	if !strings.Contains(help, "Usage: /model [model]") {
 		t.Fatalf("specific help is missing model usage:\n%s", help)
 	}
 	if strings.Contains(help, "/reasoning") {
 		t.Fatalf("specific help included the full catalog:\n%s", help)
+	}
+}
+
+func TestCurrentCommandResponseText(t *testing.T) {
+	if got := displayReasoningLevel(""); got != "off" {
+		t.Fatalf("empty reasoning level = %q, want off", got)
+	}
+	if got := currentSystemPromptText(RoomConfig{}); got != "No additional system prompt is set." {
+		t.Fatalf("empty system prompt text = %q", got)
+	}
+	prompt := currentSystemPromptText(RoomConfig{AdditionalPrompt: "be terse"})
+	if !strings.Contains(prompt, "Current system prompt:") || !strings.Contains(prompt, "```\nbe terse\n```") {
+		t.Fatalf("unexpected current prompt text:\n%s", prompt)
+	}
+}
+
+func TestCommandResponseContentIsVisibleText(t *testing.T) {
+	content := commandResponseContent(aiSlashCommandHelp(""))
+	if content.MsgType != event.MsgNotice {
+		t.Fatalf("command response msgtype=%s, want %s", content.MsgType, event.MsgNotice)
+	}
+	if content.Format != event.FormatHTML {
+		t.Fatalf("command response format=%s, want %s", content.Format, event.FormatHTML)
+	}
+	if !strings.Contains(content.Body, "AI Bridge commands:") {
+		t.Fatalf("command response body did not include help catalog:\n%s", content.Body)
+	}
+	if !strings.Contains(content.FormattedBody, "<code>/help [command]</code>") {
+		t.Fatalf("command response formatted body did not render command usage as HTML:\n%s", content.FormattedBody)
 	}
 }
 

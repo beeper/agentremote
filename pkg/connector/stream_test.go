@@ -371,7 +371,7 @@ func TestPublishToolOutputStreamsLiveResult(t *testing.T) {
 		publish: streamPublishCursor{nextSeq: 1, published: len(run.Events)},
 	}}}
 
-	err := active.publishToolOutput(ctx, publisher, "!room:example.com", toolOutputEvent{
+	err := active.publishToolOutput(ctx, &Client{}, publisher, "!room:example.com", toolOutputEvent{
 		ID:    "call-1",
 		Name:  "get_session",
 		Input: map[string]any{},

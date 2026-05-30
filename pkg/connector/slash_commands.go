@@ -14,6 +14,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/format"
 )
 
 type aiSlashCommand struct {
@@ -41,28 +42,26 @@ func aiSlashCommandDefinitions() []aiSlashCommandDefinition {
 		},
 		{
 			name:            "model",
-			usage:           "/model <model>",
-			description:     "Set the AI model for this room. Use provider/model for a specific provider.",
-			argRequired:     true,
+			usage:           "/model [model]",
+			description:     "Show or set the AI model for this room. Use provider/model for a specific provider.",
 			needsRoomConfig: true,
 			noticeErrors:    true,
 			run:             runModelCommand,
 		},
 		{
 			name:            "reasoning",
-			usage:           "/reasoning <off|low|medium|high>",
-			description:     "Set the reasoning level for this room when the selected model supports it.",
-			argRequired:     true,
+			usage:           "/reasoning [off|low|medium|high]",
+			description:     "Show or set the reasoning level for this room when the selected model supports it.",
 			needsRoomConfig: true,
 			noticeErrors:    true,
 			run:             runReasoningCommand,
 		},
 		{
-			name:        "system-prompt",
-			usage:       "/system-prompt <prompt|clear>",
-			description: "Set or clear this room's additional system prompt.",
-			argRequired: true,
-			run:         runSystemPromptCommand,
+			name:            "system-prompt",
+			usage:           "/system-prompt [prompt|clear]",
+			description:     "Show, set, or clear this room's additional system prompt.",
+			needsRoomConfig: true,
+			run:             runSystemPromptCommand,
 		},
 	}
 }
@@ -162,7 +161,10 @@ func runReasoningCommand(cl *Client, ctx context.Context, msg *bridgev2.MatrixMe
 	return cl.applyReasoningCommand(ctx, msg.Portal, roomConfig, arg)
 }
 
-func runSystemPromptCommand(cl *Client, ctx context.Context, msg *bridgev2.MatrixMessage, _ RoomConfig, arg string) error {
+func runSystemPromptCommand(cl *Client, ctx context.Context, msg *bridgev2.MatrixMessage, roomConfig RoomConfig, arg string) error {
+	if strings.TrimSpace(arg) == "" {
+		return cl.sendCommandNotice(ctx, msg.Portal, currentSystemPromptText(roomConfig))
+	}
 	prompt := arg
 	if strings.EqualFold(prompt, "clear") || strings.EqualFold(prompt, "reset") {
 		prompt = ""
@@ -177,6 +179,13 @@ func runSystemPromptCommand(cl *Client, ctx context.Context, msg *bridgev2.Matri
 }
 
 func (cl *Client) applyModelCommand(ctx context.Context, portal *bridgev2.Portal, current RoomConfig, requested string) error {
+	if strings.TrimSpace(requested) == "" {
+		_, _, canonical, err := cl.resolveCanonicalRoomModel(ctx, current)
+		if err != nil {
+			return fmt.Errorf("AI room settings rejected: %v", err)
+		}
+		return cl.sendCommandNotice(ctx, portal, fmt.Sprintf("Current model is `%s`.", canonical))
+	}
 	target := current
 	providerID, modelID := splitModelRef(requested)
 	if modelID == "" {
@@ -199,6 +208,13 @@ func (cl *Client) applyModelCommand(ctx context.Context, portal *bridgev2.Portal
 }
 
 func (cl *Client) applyReasoningCommand(ctx context.Context, portal *bridgev2.Portal, current RoomConfig, requested string) error {
+	if strings.TrimSpace(requested) == "" {
+		_, _, canonical, err := cl.resolveCanonicalRoomModel(ctx, current)
+		if err != nil {
+			return fmt.Errorf("AI room settings rejected: %v", err)
+		}
+		return cl.sendCommandNotice(ctx, portal, fmt.Sprintf("Current reasoning is `%s` for `%s`.", displayReasoningLevel(current.ThinkingLevel), canonical))
+	}
 	reasoning := strings.ToLower(strings.TrimSpace(requested))
 	if !validRoomReasoningLevel(reasoning) {
 		return fmt.Errorf("AI room settings rejected: reasoning level %q is invalid", requested)
@@ -217,6 +233,29 @@ func (cl *Client) applyReasoningCommand(ctx context.Context, portal *bridgev2.Po
 	}
 	cl.refreshRoomCapabilities(ctx, portal)
 	return cl.sendCommandNotice(ctx, portal, fmt.Sprintf("Reasoning set to `%s` for `%s`.", reasoning, canonical))
+}
+
+func displayReasoningLevel(level string) string {
+	if level == "" {
+		return string(ai.ModelThinkingLevelOff)
+	}
+	return level
+}
+
+func currentSystemPromptText(config RoomConfig) string {
+	prompt := strings.TrimSpace(config.AdditionalPrompt)
+	if prompt == "" {
+		return "No additional system prompt is set."
+	}
+	return "Current system prompt:\n\n" + markdownCodeBlock(prompt)
+}
+
+func markdownCodeBlock(text string) string {
+	fence := "```"
+	for strings.Contains(text, fence) {
+		fence += "`"
+	}
+	return fence + "\n" + text + "\n" + fence
 }
 
 func (cl *Client) normalizeRoomStateForPrompt(ctx context.Context, msg *bridgev2.MatrixMessage, config RoomConfig) (RoomConfig, *bridgev2.MatrixMessageResponse, bool, error) {
@@ -321,8 +360,34 @@ func (cl *Client) sendCommandNotice(ctx context.Context, portal *bridgev2.Portal
 	if cl == nil || cl.Main == nil || cl.Main.Bridge == nil || cl.Main.Bridge.Bot == nil || portal == nil || portal.MXID == "" {
 		return fmt.Errorf("portal room is not available to send command notice")
 	}
-	_, err := cl.Main.Bridge.Bot.SendMessage(ctx, portal.MXID, event.EventMessage, &event.Content{Parsed: msgconv.NoticeContent(text)}, nil)
+	content := commandResponseContent(text)
+	if roomConfig, _, err := cl.Main.ReadRoomConfig(ctx, portal.MXID); err == nil {
+		if provider, modelID, err := cl.Main.ResolveProvider(ctx, cl.UserLogin, roomConfig); err == nil {
+			cl.applyModelProfile(ctx, content, provider.ID, modelID)
+		}
+	}
+	if content.BeeperPerMessageProfile == nil {
+		content.BeeperPerMessageProfile = &event.BeeperPerMessageProfile{
+			ID:          string(aiid.AssistantUserID()),
+			Displayname: "AI",
+			HasFallback: true,
+		}
+	}
+	_, err := cl.Main.Bridge.Bot.SendMessage(ctx, portal.MXID, event.EventMessage, &event.Content{
+		Parsed: content,
+		Raw:    map[string]any{"com.beeper.ai.command_notice": true},
+	}, nil)
 	return err
+}
+
+func commandResponseContent(text string) *event.MessageEventContent {
+	if strings.TrimSpace(text) == "" {
+		return msgconv.NoticeContent(text)
+	}
+	content := format.RenderMarkdown(text, true, false)
+	content.EnsureHasHTML()
+	content.MsgType = event.MsgNotice
+	return &content
 }
 
 func (cl *Client) commandHandledResponse(msg *bridgev2.MatrixMessage, status string) *bridgev2.MatrixMessageResponse {

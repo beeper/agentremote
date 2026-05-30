@@ -26,6 +26,7 @@ import (
 	aibridgev2 "github.com/beeper/ai-bridge/pkg/ai-stream/bridgev2"
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"github.com/beeper/ai-bridge/pkg/msgconv"
+	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -482,7 +483,7 @@ func (cl *Client) runAsyncPrompt(ctx context.Context, msg *bridgev2.MatrixMessag
 			Result:  result,
 			IsError: event.AgentEvent.IsError,
 		}
-		if err := active.publishToolOutput(ctx, streamPublisher, msg.Portal.MXID, output); err != nil {
+		if err := active.publishToolOutput(ctx, cl, streamPublisher, msg.Portal.MXID, output); err != nil {
 			cl.logStreamError(err, msg.Portal.MXID, "", nil, "Failed to publish AI tool output stream carrier")
 		}
 		return nil
@@ -845,14 +846,23 @@ func (cl *Client) assistantStreamPublisher(publisher bridgev2.BeeperStreamPublis
 		)
 		descriptor, err := publisher.NewDescriptor(ctx, portal.MXID, aiid.StreamType)
 		if err != nil {
+			cl.logStreamError(err, portal.MXID, eventID, run, "Failed to create AI stream descriptor")
 			return hookStreamError(err)
 		}
+		cl.logStreamDebug(ctx, portal.MXID, eventID, run, "Created AI stream descriptor", func(evt *zerolog.Event) {
+			evt.Str("stream_type", descriptor.Type).Str("descriptor_user_id", string(descriptor.UserID))
+		})
 		assistantEvent, metadata := cl.assistantEvent(ctx, portal.PortalKey, messageID, provider.ID, model.ID, runID, descriptor, *run)
 		cl.UserLogin.QueueRemoteEvent(assistantEvent)
+		cl.logStreamDebug(ctx, portal.MXID, eventID, run, "Queued AI stream anchor")
 		if err := publisher.Register(ctx, portal.MXID, eventID, descriptor); err != nil {
+			cl.logStreamError(err, portal.MXID, eventID, run, "Failed to register AI stream publisher")
 			cl.queueAssistantRunError(portal.PortalKey, messageID, provider.ID, model.ID, runID, *run, metadata, err)
 			return hookStreamError(err)
 		}
+		cl.logStreamDebug(ctx, portal.MXID, eventID, run, "Registered AI stream publisher", func(evt *zerolog.Event) {
+			evt.Str("stream_type", descriptor.Type)
+		})
 		if active := cl.getActiveRun(portal.PortalKey); active != nil {
 			stream := &assistantStreamState{
 				messageID: messageID,
@@ -909,9 +919,10 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 			writer.Start()
 			cursor.started = true
 		}
-		startErr := publishNewStreamEvents(ctx, publisher, roomID, eventID, run, cursor)
+		startErr := cl.publishNewStreamEvents(ctx, publisher, roomID, eventID, run, cursor)
 		cursor.mu.Unlock()
 		if startErr != nil {
+			cl.logStreamError(startErr, roomID, eventID, run, "Failed to publish AI stream start carrier")
 			stream := hookStreamError(startErr)
 			downstream.End()
 			return stream
@@ -921,11 +932,31 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 				defer onEnd()
 			}
 			defer downstream.End()
+			seenFirstDelta := false
 			for evt := range upstream.Events() {
 				cursor.mu.Lock()
+				beforeEvents := len(run.Events)
 				applyAIStreamEvent(writer, evt)
+				afterEvents := len(run.Events)
 				maybeSecondVisibleChunk(evt)
-				if err := publishNewStreamEvents(ctx, publisher, roomID, eventID, run, cursor); err != nil {
+				if !seenFirstDelta && isVisibleAIStreamDelta(evt) {
+					seenFirstDelta = true
+					cl.logStreamDebug(ctx, roomID, eventID, run, "Received first AI stream delta", func(logEvt *zerolog.Event) {
+						logEvt.Str("upstream_event_type", evt.Type).
+							Int("content_index", evt.ContentIndex).
+							Int("delta_bytes", len(evt.Delta)).
+							Int("agui_events_added", afterEvents-beforeEvents)
+					})
+				}
+				if afterEvents > beforeEvents {
+					cl.logStreamDebug(ctx, roomID, eventID, run, "Transformed AI stream event to AG-UI", func(logEvt *zerolog.Event) {
+						logEvt.Str("upstream_event_type", evt.Type).
+							Int("content_index", evt.ContentIndex).
+							Int("agui_events_added", afterEvents-beforeEvents).
+							Int("pending_agui_events", afterEvents-cursor.published)
+					})
+				}
+				if err := cl.publishNewStreamEvents(ctx, publisher, roomID, eventID, run, cursor); err != nil {
 					cursor.mu.Unlock()
 					downstream.Push(ai.AssistantMessageEvent{
 						Type: "error",
@@ -941,12 +972,20 @@ func (cl *Client) streamPublisherWithEndFrom(publisher bridgev2.BeeperStreamPubl
 				cursor.mu.Unlock()
 				downstream.Push(evt)
 			}
+			cursor.mu.Lock()
+			publishedEvents := cursor.published
+			nextSeq := cursor.nextSeq
+			cursor.mu.Unlock()
+			cl.logStreamDebug(ctx, roomID, eventID, run, "Finished AI stream publishing", func(logEvt *zerolog.Event) {
+				logEvt.Int("published_agui_events", publishedEvents).
+					Int("next_seq", nextSeq)
+			})
 		}()
 		return downstream
 	}
 }
 
-func publishNewStreamEvents(ctx context.Context, publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, run *aistream.Run, cursor *streamPublishCursor) error {
+func (cl *Client) publishNewStreamEvents(ctx context.Context, publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, eventID id.EventID, run *aistream.Run, cursor *streamPublishCursor) error {
 	if run == nil || cursor == nil || cursor.published >= len(run.Events) {
 		return nil
 	}
@@ -963,6 +1002,13 @@ func publishNewStreamEvents(ctx context.Context, publisher bridgev2.BeeperStream
 		if err := publisher.Publish(ctx, roomID, eventID, aistream.CarrierContent(partial, carrier.Envelopes)); err != nil {
 			return err
 		}
+		cl.logStreamDebug(ctx, roomID, eventID, run, "Published AI stream carrier", func(logEvt *zerolog.Event) {
+			logEvt.Int("envelope_count", len(carrier.Envelopes)).
+				Int("seq_start", firstCarrierSeq(carrier)).
+				Int("seq_end", lastCarrierSeq(carrier)).
+				Strs("agui_event_types", carrierEventTypes(carrier)).
+				Str("payload_key", aistream.BeeperAIKey)
+		})
 	}
 	cursor.nextSeq = aistream.NextSeq(carriers)
 	cursor.published = len(run.Events)
@@ -1127,6 +1173,62 @@ func (cl *Client) logStreamError(err error, roomID id.RoomID, eventID id.EventID
 		event = event.Str("login_id", string(cl.UserLogin.ID))
 	}
 	event.Msg(message)
+}
+
+func (cl *Client) logStreamDebug(ctx context.Context, roomID id.RoomID, eventID id.EventID, run *aistream.Run, message string, fields ...func(*zerolog.Event)) {
+	if cl == nil || cl.Main == nil || cl.Main.Bridge == nil {
+		return
+	}
+	event := cl.Main.Bridge.Log.Debug().
+		Str("room_id", string(roomID)).
+		Str("event_id", string(eventID))
+	if run != nil {
+		event = event.
+			Str("run_id", run.RunID).
+			Str("thread_id", run.ThreadID).
+			Str("message_id", run.MessageID).
+			Str("model", run.Model)
+	}
+	if cl.UserLogin != nil {
+		event = event.Str("login_id", string(cl.UserLogin.ID))
+	}
+	for _, field := range fields {
+		if field != nil {
+			field(event)
+		}
+	}
+	event.Ctx(ctx).Msg(message)
+}
+
+func isVisibleAIStreamDelta(evt ai.AssistantMessageEvent) bool {
+	switch evt.Type {
+	case "text_delta", "thinking_delta", "toolcall_delta":
+		return evt.Delta != ""
+	default:
+		return false
+	}
+}
+
+func firstCarrierSeq(carrier aistream.Carrier) int {
+	if len(carrier.Envelopes) == 0 {
+		return 0
+	}
+	return carrier.Envelopes[0].Seq
+}
+
+func lastCarrierSeq(carrier aistream.Carrier) int {
+	if len(carrier.Envelopes) == 0 {
+		return 0
+	}
+	return carrier.Envelopes[len(carrier.Envelopes)-1].Seq
+}
+
+func carrierEventTypes(carrier aistream.Carrier) []string {
+	types := make([]string, 0, len(carrier.Envelopes))
+	for _, envelope := range carrier.Envelopes {
+		types = append(types, string(envelope.Event.Type()))
+	}
+	return types
 }
 
 func applyAIStreamEvent(writer *aistream.Writer, evt ai.AssistantMessageEvent) {
@@ -1561,7 +1663,7 @@ func (r *activeAIRun) addToolOutput(output toolOutputEvent) {
 	r.streams[0].tools = append(r.streams[0].tools, output)
 }
 
-func (r *activeAIRun) publishToolOutput(ctx context.Context, publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, output toolOutputEvent) error {
+func (r *activeAIRun) publishToolOutput(ctx context.Context, cl *Client, publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, output toolOutputEvent) error {
 	r.mu.Lock()
 	if len(r.streams) == 0 {
 		r.mu.Unlock()
@@ -1578,7 +1680,7 @@ func (r *activeAIRun) publishToolOutput(ctx context.Context, publisher bridgev2.
 	for _, source := range webSearchSourceParts(output.Name, structuredOutput, output.IsError) {
 		writer.Custom("com.beeper.source", source)
 	}
-	return publishNewStreamEvents(ctx, publisher, roomID, stream.eventID, stream.run, &stream.publish)
+	return cl.publishNewStreamEvents(ctx, publisher, roomID, stream.eventID, stream.run, &stream.publish)
 }
 
 func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, providerID string, modelID string, message ai.Message) {
