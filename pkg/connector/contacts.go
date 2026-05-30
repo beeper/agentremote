@@ -167,19 +167,7 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("AI Services models returned HTTP %d", resp.StatusCode)
 	}
-	var body struct {
-		Data []struct {
-			ID            string `json:"id"`
-			Name          string `json:"name"`
-			ContextLength int    `json:"context_length"`
-			Architecture  *struct {
-				InputModalities []string `json:"input_modalities"`
-			} `json:"architecture"`
-			TopProvider *struct {
-				MaxCompletionTokens int `json:"max_completion_tokens"`
-			} `json:"top_provider"`
-		} `json:"data"`
-	}
+	var body aiServicesModelListResponse
 	if err = json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return nil, err
 	}
@@ -189,24 +177,18 @@ func (cl *Client) aiServicesCatalogModels(ctx context.Context, provider aiid.Pro
 		if modelID == "" {
 			continue
 		}
-		input := []string{"text", "image"}
-		if item.Architecture != nil && len(item.Architecture.InputModalities) > 0 {
-			input = append([]string{}, item.Architecture.InputModalities...)
-		}
-		maxTokens := 0
-		if item.TopProvider != nil {
-			maxTokens = item.TopProvider.MaxCompletionTokens
-		}
 		model := ai.Model{
 			ID:            modelID,
 			Name:          item.Name,
 			API:           provider.API,
 			Provider:      provider.Provider,
 			BaseURL:       provider.BaseURL,
-			Input:         input,
-			ContextWindow: item.ContextLength,
-			MaxTokens:     maxTokens,
+			Reasoning:     item.reasoning(),
+			Input:         item.inputModalities(),
+			ContextWindow: item.contextWindow(),
+			MaxTokens:     item.maxTokens(),
 		}
+		model = item.applyProviderRoute(model, provider)
 		models = append(models, normalizeProviderModel(model, provider))
 	}
 	return models, nil
@@ -217,12 +199,133 @@ func aiServicesModelsURL(proxyBaseURL string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	parsed.Path = strings.TrimSuffix(parsed.Path, "/proxy/_/v1")
-	parsed.Path = strings.TrimSuffix(parsed.Path, "/proxy/_")
+	parsed.Path = trimAIProxyProviderPath(parsed.Path)
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + "/models"
-	parsed.RawQuery = ""
+	parsed.RawQuery = url.Values{"feature": {"bridge:ai"}, "route": {"responses"}}.Encode()
 	parsed.Fragment = ""
 	return parsed.String(), nil
+}
+
+func trimAIProxyProviderPath(path string) string {
+	for _, suffix := range []string{
+		"/proxy/openai/v1",
+		"/proxy/openai",
+		"/proxy/openrouter/v1",
+		"/proxy/openrouter",
+		"/proxy/anthropic/v1",
+		"/proxy/anthropic",
+		"/proxy/vertex/v1",
+		"/proxy/vertex",
+		"/proxy/_/v1",
+		"/proxy/_",
+	} {
+		path = strings.TrimSuffix(path, suffix)
+	}
+	return path
+}
+
+type aiServicesModelListResponse struct {
+	Type string                 `json:"type"`
+	Data []aiServicesModelEntry `json:"data"`
+}
+
+type aiServicesModelEntry struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ContextLength int    `json:"context_length"`
+	Architecture  *struct {
+		InputModalities []string `json:"input_modalities"`
+	} `json:"architecture"`
+	TopProvider *struct {
+		MaxCompletionTokens int `json:"max_completion_tokens"`
+	} `json:"top_provider"`
+	Provider *struct {
+		ID      string `json:"id"`
+		ModelID string `json:"model_id"`
+		API     string `json:"api"`
+	} `json:"provider"`
+	Capabilities *struct {
+		Input struct {
+			Modalities []string `json:"modalities"`
+		} `json:"input"`
+		Reasoning *struct {
+			Supported bool `json:"supported"`
+		} `json:"reasoning"`
+		Limits *struct {
+			ContextTokens int `json:"context_tokens"`
+			OutputTokens  int `json:"output_tokens"`
+		} `json:"limits"`
+	} `json:"capabilities"`
+}
+
+func (entry aiServicesModelEntry) applyProviderRoute(model ai.Model, provider aiid.ProviderConfig) ai.Model {
+	if entry.Provider == nil || entry.Provider.ID == "" {
+		return model
+	}
+	switch entry.Provider.ID {
+	case "wpcom_anthropic":
+		model.API = ai.ApiAnthropicMessages
+		model.Provider = ai.ProviderAnthropic
+		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "anthropic", false)
+	case "wpcom_vertex":
+		model.API = ai.ApiGoogleVertex
+		model.Provider = ai.ProviderGoogleVertex
+		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "vertex", false)
+	case "wpcom_openai":
+		model.API = ai.ApiOpenAIResponses
+		model.Provider = ai.ProviderOpenAI
+		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "openai", true)
+	case "openrouter":
+		model.API = ai.ApiOpenAIResponses
+		model.Provider = ai.ProviderOpenRouter
+		model.BaseURL = aiServicesProxyBaseURL(provider.BaseURL, "openrouter", true)
+	}
+	return model
+}
+
+func aiServicesProxyBaseURL(baseURL string, providerPath string, includeV1 bool) string {
+	parsed, err := url.Parse(strings.TrimRight(normalizeResponsesBaseURL(baseURL), "/"))
+	if err != nil {
+		return baseURL
+	}
+	parsed.Path = strings.TrimRight(trimAIProxyProviderPath(parsed.Path), "/") + "/proxy/" + providerPath
+	if includeV1 {
+		parsed.Path += "/v1"
+	}
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+func (entry aiServicesModelEntry) inputModalities() []string {
+	if entry.Capabilities != nil && len(entry.Capabilities.Input.Modalities) > 0 {
+		return append([]string{}, entry.Capabilities.Input.Modalities...)
+	}
+	if entry.Architecture != nil && len(entry.Architecture.InputModalities) > 0 {
+		return append([]string{}, entry.Architecture.InputModalities...)
+	}
+	return []string{"text"}
+}
+
+func (entry aiServicesModelEntry) contextWindow() int {
+	if entry.Capabilities != nil && entry.Capabilities.Limits != nil && entry.Capabilities.Limits.ContextTokens > 0 {
+		return entry.Capabilities.Limits.ContextTokens
+	}
+	return entry.ContextLength
+}
+
+func (entry aiServicesModelEntry) maxTokens() int {
+	if entry.Capabilities != nil && entry.Capabilities.Limits != nil && entry.Capabilities.Limits.OutputTokens > 0 {
+		return entry.Capabilities.Limits.OutputTokens
+	}
+	if entry.TopProvider != nil {
+		return entry.TopProvider.MaxCompletionTokens
+	}
+	return 0
+}
+
+func (entry aiServicesModelEntry) reasoning() bool {
+	return entry.Capabilities != nil && entry.Capabilities.Reasoning != nil && entry.Capabilities.Reasoning.Supported
 }
 
 func modelContact(provider aiid.ProviderConfig, model ai.Model) *bridgev2.ResolveIdentifierResponse {

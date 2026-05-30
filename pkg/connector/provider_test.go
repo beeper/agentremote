@@ -38,6 +38,91 @@ func TestModelForProviderConstructsCustomModel(t *testing.T) {
 	}
 }
 
+func TestModelForProviderPreservesOpenAICatalogModelID(t *testing.T) {
+	conn := &Connector{}
+	provider := aiid.ProviderConfig{
+		ID:       aiid.DefaultProvider,
+		API:      ai.ApiOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+		BaseURL:  "https://ai-services.beeper-staging.com/proxy/openai/v1",
+	}
+	model := conn.ModelForProvider(provider, "openai/gpt-5.5")
+	if model.ID != "openai/gpt-5.5" || model.Provider != ai.ProviderOpenAI || model.API != ai.ApiOpenAIResponses {
+		t.Fatalf("unexpected model %#v", model)
+	}
+	if !model.Reasoning {
+		t.Fatalf("expected model to use OpenAI catalog metadata")
+	}
+}
+
+func TestModelForProviderPassesCustomOpenAIProviderModelIDDirectly(t *testing.T) {
+	conn := &Connector{}
+	provider := aiid.ProviderConfig{
+		ID:       "custom-openai",
+		API:      ai.ApiOpenAIResponses,
+		Provider: ai.ProviderOpenAI,
+		BaseURL:  "https://custom.test/v1",
+	}
+	model := conn.ModelForProvider(provider, "openai/gpt-5.5")
+	if model.ID != "openai/gpt-5.5" {
+		t.Fatalf("expected custom provider model ID to pass through, got %#v", model)
+	}
+}
+
+func TestModelForProviderPreservesNonOpenAIBeeperProviderModelID(t *testing.T) {
+	conn := &Connector{}
+	provider := aiid.ProviderConfig{
+		ID:       aiid.DefaultProvider,
+		API:      ai.ApiOpenAICompletions,
+		Provider: ai.ProviderOpenRouter,
+		BaseURL:  "https://openrouter.ai/api/v1",
+	}
+	model := conn.ModelForProvider(provider, "openai/gpt-5")
+	if model.ID != "openai/gpt-5" || model.Provider != ai.ProviderOpenRouter {
+		t.Fatalf("expected non-OpenAI Beeper provider model ID to stay qualified, got %#v", model)
+	}
+}
+
+func TestTitleGenerationModelUsesDefaultGPTMini(t *testing.T) {
+	conn := &Connector{}
+	client := &Client{Main: conn}
+	provider := conn.defaultProviderConfig()
+	model := client.titleGenerationModel(provider, ai.Model{ID: defaultBeeperAIModel})
+	if model.ID != defaultTitleGenerationModel || model.Provider != ai.ProviderOpenAI || model.API != ai.ApiOpenAIResponses {
+		t.Fatalf("unexpected title model %#v", model)
+	}
+}
+
+func TestTitleGenerationModelUsesOpenRouterGPTMini(t *testing.T) {
+	client := &Client{Main: &Connector{}}
+	provider := aiid.ProviderConfig{
+		ID:            "openrouter",
+		API:           ai.ApiOpenAICompletions,
+		Provider:      ai.ProviderOpenRouter,
+		BaseURL:       "https://openrouter.ai/api/v1",
+		AllowedModels: []string{openRouterTitleGenerationModel},
+	}
+	model := client.titleGenerationModel(provider, ai.Model{ID: "anthropic/claude-sonnet-4.5"})
+	if model.ID != openRouterTitleGenerationModel || model.Provider != ai.ProviderOpenRouter || model.API != ai.ApiOpenAICompletions {
+		t.Fatalf("unexpected title model %#v", model)
+	}
+}
+
+func TestTitleGenerationModelFallsBackWhenProviderDisallowsGPTMini(t *testing.T) {
+	client := &Client{Main: &Connector{}}
+	fallback := ai.Model{ID: "local-model", Provider: ai.Provider("local")}
+	provider := aiid.ProviderConfig{
+		ID:            "local",
+		API:           ai.ApiOpenAIResponses,
+		Provider:      ai.ProviderOpenAI,
+		AllowedModels: []string{fallback.ID},
+	}
+	model := client.titleGenerationModel(provider, fallback)
+	if model.ID != fallback.ID || model.Provider != fallback.Provider {
+		t.Fatalf("expected fallback model, got %#v", model)
+	}
+}
+
 func TestDefaultProviderAuthUsesAppServiceToken(t *testing.T) {
 	client := &Client{
 		Main: &Connector{
@@ -112,7 +197,7 @@ func TestConfigDefaults(t *testing.T) {
 }
 
 func TestDefaultAIServicesProxyBaseURLFollowsHomeserverAddress(t *testing.T) {
-	if got := defaultAIServicesProxyBaseURL("https://matrix.beeper-staging.com/_hungryserv/test"); got != "https://ai-services.beeper-staging.com/proxy/_/v1" {
+	if got := defaultAIServicesProxyBaseURL("https://matrix.beeper-staging.com/_hungryserv/test"); got != "https://ai-services.beeper-staging.com/proxy/openai/v1" {
 		t.Fatalf("unexpected staging AI Services URL from homeserver address %q", got)
 	}
 }
@@ -131,7 +216,7 @@ func TestDefaultProviderBaseURLUsesConnectorHomeserverAddress(t *testing.T) {
 		HomeserverAddress: "https://matrix.beeper-staging.com/_hungryserv/test",
 	}
 	provider := conn.defaultProviderConfig()
-	if provider.BaseURL != "https://ai-services.beeper-staging.com/proxy/_/v1" {
+	if provider.BaseURL != "https://ai-services.beeper-staging.com/proxy/openai/v1" {
 		t.Fatalf("unexpected provider base URL %q", provider.BaseURL)
 	}
 }
@@ -348,14 +433,14 @@ func TestModelForProviderAppliesRouteBaseURLToDefaultModel(t *testing.T) {
 		ID:            aiid.DefaultProvider,
 		API:           ai.ApiOpenAIResponses,
 		Provider:      ai.ProviderOpenAI,
-		BaseURL:       "https://ai-services.beeper.com/proxy/_/v1/responses",
+		BaseURL:       "https://ai-services.beeper.com/proxy/openai/v1/responses",
 		AllowedModels: []string{"gpt-5.5"},
 	}
 	model := conn.ModelForProvider(provider, "gpt-5.5")
 	if model.Provider != ai.ProviderOpenAI || model.ID != "gpt-5.5" {
 		t.Fatalf("expected AI Services model, got %#v", model)
 	}
-	if model.BaseURL != "https://ai-services.beeper.com/proxy/_/v1" {
+	if model.BaseURL != "https://ai-services.beeper.com/proxy/openai/v1" {
 		t.Fatalf("expected route base URL override, got %q", model.BaseURL)
 	}
 	if model.ContextWindow == 0 || model.MaxTokens == 0 {

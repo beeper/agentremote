@@ -21,6 +21,52 @@ type aiSlashCommand struct {
 	arg  string
 }
 
+type aiSlashCommandDefinition struct {
+	name            string
+	usage           string
+	description     string
+	argRequired     bool
+	needsRoomConfig bool
+	noticeErrors    bool
+	run             func(*Client, context.Context, *bridgev2.MatrixMessage, RoomConfig, string) error
+}
+
+func aiSlashCommandDefinitions() []aiSlashCommandDefinition {
+	return []aiSlashCommandDefinition{
+		{
+			name:        "help",
+			usage:       "/help [command]",
+			description: "Show available AI Bridge commands.",
+			run:         runHelpCommand,
+		},
+		{
+			name:            "model",
+			usage:           "/model <model>",
+			description:     "Set the AI model for this room. Use provider/model for a specific provider.",
+			argRequired:     true,
+			needsRoomConfig: true,
+			noticeErrors:    true,
+			run:             runModelCommand,
+		},
+		{
+			name:            "reasoning",
+			usage:           "/reasoning <off|low|medium|high>",
+			description:     "Set the reasoning level for this room when the selected model supports it.",
+			argRequired:     true,
+			needsRoomConfig: true,
+			noticeErrors:    true,
+			run:             runReasoningCommand,
+		},
+		{
+			name:        "system-prompt",
+			usage:       "/system-prompt <prompt|clear>",
+			description: "Set or clear this room's additional system prompt.",
+			argRequired: true,
+			run:         runSystemPromptCommand,
+		},
+	}
+}
+
 func parseAISlashCommand(body string) (aiSlashCommand, bool) {
 	body = strings.TrimSpace(body)
 	if !strings.HasPrefix(body, "/") {
@@ -29,12 +75,10 @@ func parseAISlashCommand(body string) (aiSlashCommand, bool) {
 	name, arg, _ := strings.Cut(strings.TrimPrefix(body, "/"), " ")
 	name = strings.ToLower(strings.TrimSpace(name))
 	arg = strings.TrimSpace(arg)
-	switch name {
-	case "model", "reasoning", "system-prompt":
+	if _, ok := aiSlashCommandByName(name); ok {
 		return aiSlashCommand{name: name, arg: arg}, true
-	default:
-		return aiSlashCommand{}, false
 	}
+	return aiSlashCommand{}, false
 }
 
 func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, bool, error) {
@@ -48,61 +92,88 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 	if msg.Portal == nil {
 		return nil, true, fmt.Errorf("missing portal for AI command")
 	}
-	roomConfig, _, err := cl.Main.ReadRoomConfig(ctx, msg.Portal.MXID)
-	if err != nil {
-		return nil, true, err
-	}
-	switch cmd.name {
-	case "model":
-		if cmd.arg == "" {
-			if err = cl.sendCommandNotice(ctx, msg.Portal, "Usage: /model <model>"); err != nil {
-				return nil, true, err
-			}
-			return cl.commandHandledResponse(msg, "usage"), true, nil
-		}
-		if err = cl.applyModelCommand(ctx, msg.Portal, roomConfig, cmd.arg); err != nil {
-			if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, err.Error()); noticeErr != nil {
-				return nil, true, noticeErr
-			}
-			return cl.commandHandledResponse(msg, "rejected"), true, nil
-		}
-	case "reasoning":
-		if cmd.arg == "" {
-			if err = cl.sendCommandNotice(ctx, msg.Portal, "Usage: /reasoning <off|low|medium|high>"); err != nil {
-				return nil, true, err
-			}
-			return cl.commandHandledResponse(msg, "usage"), true, nil
-		}
-		if err = cl.applyReasoningCommand(ctx, msg.Portal, roomConfig, cmd.arg); err != nil {
-			if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, err.Error()); noticeErr != nil {
-				return nil, true, noticeErr
-			}
-			return cl.commandHandledResponse(msg, "rejected"), true, nil
-		}
-	case "system-prompt":
-		if cmd.arg == "" {
-			if err = cl.sendCommandNotice(ctx, msg.Portal, "Usage: /system-prompt <prompt|clear>"); err != nil {
-				return nil, true, err
-			}
-			return cl.commandHandledResponse(msg, "usage"), true, nil
-		}
-		prompt := cmd.arg
-		if strings.EqualFold(prompt, "clear") || strings.EqualFold(prompt, "reset") {
-			prompt = ""
-		}
-		if _, err := cl.writeRoomPromptState(ctx, msg.Portal, prompt); err != nil {
+	def, _ := aiSlashCommandByName(cmd.name)
+	if def.argRequired && cmd.arg == "" {
+		if err := cl.sendCommandNotice(ctx, msg.Portal, aiSlashCommandUsage(def)); err != nil {
 			return nil, true, err
 		}
-		if prompt == "" {
-			err = cl.sendCommandNotice(ctx, msg.Portal, "System prompt cleared.")
-		} else {
-			err = cl.sendCommandNotice(ctx, msg.Portal, "System prompt updated.")
-		}
+		return cl.commandHandledResponse(msg, "usage"), true, nil
+	}
+	var roomConfig RoomConfig
+	if def.needsRoomConfig {
+		var err error
+		roomConfig, _, err = cl.Main.ReadRoomConfig(ctx, msg.Portal.MXID)
 		if err != nil {
 			return nil, true, err
 		}
 	}
+	if err := def.run(cl, ctx, msg, roomConfig, cmd.arg); err != nil {
+		if def.noticeErrors {
+			if noticeErr := cl.sendCommandNotice(ctx, msg.Portal, err.Error()); noticeErr != nil {
+				return nil, true, noticeErr
+			}
+			return cl.commandHandledResponse(msg, "rejected"), true, nil
+		}
+		return nil, true, err
+	}
 	return cl.commandHandledResponse(msg, cmd.name), true, nil
+}
+
+func aiSlashCommandByName(name string) (aiSlashCommandDefinition, bool) {
+	for _, def := range aiSlashCommandDefinitions() {
+		if def.name == name {
+			return def, true
+		}
+	}
+	return aiSlashCommandDefinition{}, false
+}
+
+func aiSlashCommandUsage(def aiSlashCommandDefinition) string {
+	return "Usage: " + def.usage
+}
+
+func aiSlashCommandHelp(topic string) string {
+	topic = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(topic)), "/")
+	if topic != "" {
+		if def, ok := aiSlashCommandByName(topic); ok {
+			return fmt.Sprintf("%s\n\n%s", aiSlashCommandUsage(def), def.description)
+		}
+	}
+	var text strings.Builder
+	if topic != "" {
+		fmt.Fprintf(&text, "Unknown command `/%s`.\n\n", topic)
+	}
+	text.WriteString("AI Bridge commands:")
+	for _, def := range aiSlashCommandDefinitions() {
+		fmt.Fprintf(&text, "\n- `%s` - %s", def.usage, def.description)
+	}
+	return text.String()
+}
+
+func runHelpCommand(cl *Client, ctx context.Context, msg *bridgev2.MatrixMessage, _ RoomConfig, arg string) error {
+	return cl.sendCommandNotice(ctx, msg.Portal, aiSlashCommandHelp(arg))
+}
+
+func runModelCommand(cl *Client, ctx context.Context, msg *bridgev2.MatrixMessage, roomConfig RoomConfig, arg string) error {
+	return cl.applyModelCommand(ctx, msg.Portal, roomConfig, arg)
+}
+
+func runReasoningCommand(cl *Client, ctx context.Context, msg *bridgev2.MatrixMessage, roomConfig RoomConfig, arg string) error {
+	return cl.applyReasoningCommand(ctx, msg.Portal, roomConfig, arg)
+}
+
+func runSystemPromptCommand(cl *Client, ctx context.Context, msg *bridgev2.MatrixMessage, _ RoomConfig, arg string) error {
+	prompt := arg
+	if strings.EqualFold(prompt, "clear") || strings.EqualFold(prompt, "reset") {
+		prompt = ""
+	}
+	if _, err := cl.writeRoomPromptState(ctx, msg.Portal, prompt); err != nil {
+		return err
+	}
+	if prompt == "" {
+		return cl.sendCommandNotice(ctx, msg.Portal, "System prompt cleared.")
+	}
+	return cl.sendCommandNotice(ctx, msg.Portal, "System prompt updated.")
 }
 
 func (cl *Client) applyModelCommand(ctx context.Context, portal *bridgev2.Portal, current RoomConfig, requested string) error {

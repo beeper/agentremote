@@ -8,20 +8,19 @@ import (
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 )
 
-const SystemPrompt = `You generate concise conversation titles.
-
-Return only the title. Do not use quotes. Do not end with punctuation.`
-
-const titlePrompt = `Create a short title for this conversation.
-
+const SystemPrompt = `You create short session titles for coding and technical work.
+Return exactly one title based only on the user's first message.
 Rules:
-- 3 to 7 words
-- specific to the user's task
-- no trailing punctuation
-- no quotes
+- Prefer 2 to 6 words
+- Use Title Case
+- Mention the task, feature, bug, or file focus when clear
+- No quotes
+- No markdown
+- No labels like Title:
+- No trailing punctuation
+- Maximum 60 characters`
 
-Conversation:
-`
+const maxTitleChars = 60
 
 type Options struct {
 	Model    ai.Model
@@ -34,8 +33,8 @@ func Generate(ctx context.Context, messages []agent.AgentMessage, options Option
 	if options.StreamFn == nil {
 		options.StreamFn = ai.StreamSimple
 	}
-	prompt := titlePrompt + conversationText(messages)
-	maxTokens := 32
+	prompt := firstUserText(messages)
+	maxTokens := 64
 	stream := options.StreamFn(ctx, options.Model, ai.Context{
 		SystemPrompt: SystemPrompt,
 		Messages: []ai.Message{{
@@ -50,25 +49,14 @@ func Generate(ctx context.Context, messages []agent.AgentMessage, options Option
 	return cleanTitle(assistantText(stream.Result())), nil
 }
 
-func conversationText(messages []agent.AgentMessage) string {
-	var out strings.Builder
-	limit := len(messages)
-	if limit > 6 {
-		limit = 6
-	}
-	for i := 0; i < limit; i++ {
-		message := messages[i]
-		switch message.Role {
-		case "user":
-			out.WriteString("\nUser: ")
-		case "assistant":
-			out.WriteString("\nAssistant: ")
-		default:
+func firstUserText(messages []agent.AgentMessage) string {
+	for _, message := range messages {
+		if message.Role != "user" {
 			continue
 		}
-		out.WriteString(assistantText(ai.Message(message)))
+		return trimPrompt(assistantText(ai.Message(message)))
 	}
-	return out.String()
+	return ""
 }
 
 func assistantText(message ai.Message) string {
@@ -91,13 +79,71 @@ func contentBlocks(content any) []ai.ContentBlock {
 	return nil
 }
 
-func cleanTitle(title string) string {
-	title = strings.TrimSpace(title)
-	title = strings.Trim(title, "\"'`")
-	title = strings.TrimRight(title, ".!?")
-	fields := strings.Fields(title)
-	if len(fields) > 7 {
-		fields = fields[:7]
+func trimPrompt(value string) string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.TrimSpace(value)
+	if len(value) > 4000 {
+		return value[:4000]
 	}
-	return strings.Join(fields, " ")
+	return value
+}
+
+func cleanTitle(title string) string {
+	title = trimCodeFence(title)
+	if lines := strings.Split(title, "\n"); len(lines) > 1 {
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				title = line
+				break
+			}
+		}
+	}
+	title = trimCodeFence(title)
+	title = strings.TrimSpace(title)
+	title = strings.TrimPrefix(title, "- ")
+	title = strings.TrimPrefix(title, "* ")
+	if rest, ok := stripLabel(title); ok {
+		title = rest
+	}
+	title = strings.Trim(title, "\"'`")
+	title = strings.TrimRight(title, ".?!:;,")
+	title = strings.Trim(title, "\"'`")
+	title = strings.Join(strings.Fields(title), " ")
+	runes := []rune(title)
+	if len(runes) <= maxTitleChars {
+		return title
+	}
+	title = strings.TrimSpace(string(runes[:maxTitleChars]))
+	if lastSpace := strings.LastIndex(title, " "); lastSpace > 20 {
+		title = title[:lastSpace]
+	}
+	return strings.TrimSpace(title)
+}
+
+func trimCodeFence(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "```") {
+		value = strings.TrimPrefix(value, "```")
+		value = strings.TrimLeft(value, " \t")
+		if newline := strings.IndexAny(value, "\r\n"); newline >= 0 {
+			firstLine := strings.TrimSpace(value[:newline])
+			if firstLine != "" && !strings.Contains(firstLine, " ") {
+				value = value[newline:]
+			}
+		}
+	}
+	value = strings.TrimSpace(value)
+	value = strings.TrimSuffix(value, "```")
+	return strings.TrimSpace(value)
+}
+
+func stripLabel(title string) (string, bool) {
+	lower := strings.ToLower(title)
+	for _, label := range []string{"title:", "session name:"} {
+		if strings.HasPrefix(lower, label) {
+			return strings.TrimSpace(title[len(label):]), true
+		}
+	}
+	return title, false
 }

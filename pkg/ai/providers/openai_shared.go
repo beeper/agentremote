@@ -813,6 +813,9 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			}
 		}
 	case "response.output_text.delta":
+		if s.currentItemType == "message" && s.currentMessagePartType == "" {
+			s.currentMessagePartType = "output_text"
+		}
 		if s.currentMessagePartType == "output_text" && s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "text" {
 			delta, _ := event["delta"].(string)
 			s.blocks[s.currentIndex].Text += delta
@@ -820,6 +823,9 @@ func (s *responsesStreamState) apply(stream *ai.AssistantMessageEventStream, out
 			push(ai.AssistantMessageEvent{Type: "text_delta", ContentIndex: s.currentIndex, Delta: delta, Partial: output})
 		}
 	case "response.refusal.delta":
+		if s.currentItemType == "message" && s.currentMessagePartType == "" {
+			s.currentMessagePartType = "refusal"
+		}
 		if s.currentMessagePartType == "refusal" && s.currentIndex >= 0 && s.blocks[s.currentIndex].Type == "text" {
 			delta, _ := event["delta"].(string)
 			s.blocks[s.currentIndex].Text += delta

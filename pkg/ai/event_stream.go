@@ -8,6 +8,7 @@ type AssistantMessageEventStream struct {
 	once   sync.Once
 	mu     sync.Mutex
 	result Message
+	closed bool
 }
 
 func NewAssistantMessageEventStream() *AssistantMessageEventStream {
@@ -23,38 +24,58 @@ func (s *AssistantMessageEventStream) Events() <-chan AssistantMessageEvent {
 }
 
 func (s *AssistantMessageEventStream) Push(event AssistantMessageEvent) {
-	select {
-	case <-s.done:
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
 		return
-	default:
 	}
 	if event.Type == "done" && event.Message != nil {
 		s.result = *event.Message
 		s.events <- event
-		s.End()
+		s.closeLocked()
+		s.mu.Unlock()
 		return
 	}
 	if event.Type == "error" && event.Error != nil {
 		s.result = *event.Error
 		s.events <- event
-		s.End()
+		s.closeLocked()
+		s.mu.Unlock()
 		return
 	}
 	s.events <- event
+	s.mu.Unlock()
 }
 
 func (s *AssistantMessageEventStream) End() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeLocked()
+}
+
+func (s *AssistantMessageEventStream) closeLocked() {
 	s.once.Do(func() {
+		s.closed = true
 		close(s.done)
 		close(s.events)
 	})
 }
 
 func (s *AssistantMessageEventStream) Result() Message {
-	<-s.done
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.result
+	for {
+		select {
+		case <-s.done:
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			return s.result
+		case _, ok := <-s.events:
+			if !ok {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				return s.result
+			}
+		}
+	}
 }
 
 func EmptyUsage() Usage {

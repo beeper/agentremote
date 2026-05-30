@@ -162,7 +162,7 @@ func TestResponsesStreamStateFinalizesReasoningTextToolAndUsage(t *testing.T) {
 	}
 }
 
-func TestResponsesStreamStateIgnoresDeltasBeforeMatchingParts(t *testing.T) {
+func TestResponsesStreamStateStreamsTextDeltasWithoutContentPartPrelude(t *testing.T) {
 	stream := ai.NewAssistantMessageEventStream()
 	model := testStreamModel()
 	model.API = ai.ApiOpenAIResponses
@@ -173,18 +173,27 @@ func TestResponsesStreamStateIgnoresDeltasBeforeMatchingParts(t *testing.T) {
 		"type": "response.output_item.added",
 		"item": map[string]any{"type": "message", "id": "msg_1"},
 	})
-	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{"type": "response.output_text.delta", "delta": "ignored"})
-	if state.blocks[0].Text != "" {
-		t.Fatalf("expected text delta before content part to be ignored, got %#v", state.blocks[0])
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{"type": "response.output_text.delta", "delta": "direct"})
+	if state.blocks[0].Text != "direct" {
+		t.Fatalf("expected text delta without content part prelude to stream, got %#v", state.blocks[0])
 	}
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.done",
+		"item": map[string]any{"type": "message", "id": "msg_1", "content": []any{map[string]any{"type": "output_text", "text": "direct"}}},
+	})
+
+	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
+		"type": "response.output_item.added",
+		"item": map[string]any{"type": "message", "id": "msg_2"},
+	})
 	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
 		"type": "response.content_part.added",
 		"part": map[string]any{"type": "refusal"},
 	})
 	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{"type": "response.output_text.delta", "delta": "still ignored"})
 	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{"type": "response.refusal.delta", "delta": "refused"})
-	if state.blocks[0].Text != "refused" {
-		t.Fatalf("expected only matching refusal delta, got %#v", state.blocks[0])
+	if state.blocks[1].Text != "refused" {
+		t.Fatalf("expected only matching refusal delta, got %#v", state.blocks[1])
 	}
 
 	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
@@ -192,16 +201,16 @@ func TestResponsesStreamStateIgnoresDeltasBeforeMatchingParts(t *testing.T) {
 		"item": map[string]any{"type": "reasoning", "id": "rs_1"},
 	})
 	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{"type": "response.reasoning_summary_text.delta", "delta": "ignored"})
-	if state.blocks[1].Thinking != "" {
-		t.Fatalf("expected summary delta before summary part to be ignored, got %#v", state.blocks[1])
+	if state.blocks[2].Thinking != "" {
+		t.Fatalf("expected summary delta before summary part to be ignored, got %#v", state.blocks[2])
 	}
 	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{
 		"type": "response.reasoning_summary_part.added",
 		"part": map[string]any{"type": "summary_text", "text": ""},
 	})
 	state.apply(stream, &output, model, OpenAIResponsesOptions{}, map[string]any{"type": "response.reasoning_summary_text.delta", "delta": "summary"})
-	if state.blocks[1].Thinking != "summary" {
-		t.Fatalf("expected summary delta after summary part, got %#v", state.blocks[1])
+	if state.blocks[2].Thinking != "summary" {
+		t.Fatalf("expected summary delta after summary part, got %#v", state.blocks[2])
 	}
 }
 

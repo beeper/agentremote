@@ -13,7 +13,10 @@ import (
 var ExampleConfig string
 
 const defaultAIServicesProxyPrefix = "https://ai-services."
+const defaultAIServicesProxyPath = "/proxy/openai/v1"
 const defaultBeeperAIModel = "gpt-5.5"
+const defaultTitleGenerationModel = "gpt-5-mini"
+const openRouterTitleGenerationModel = "openai/gpt-5-mini"
 
 type Config struct {
 	DefaultSystemPrompt   string       `yaml:"default_system_prompt"`
@@ -71,7 +74,7 @@ func defaultAIServicesProxyBaseURL(homeserverAddress string) string {
 	if domain == "" {
 		return ""
 	}
-	return defaultAIServicesProxyPrefix + domain + "/proxy/_/v1"
+	return defaultAIServicesProxyPrefix + domain + defaultAIServicesProxyPath
 }
 
 func normalizeHomeserverAddress(value string) string {

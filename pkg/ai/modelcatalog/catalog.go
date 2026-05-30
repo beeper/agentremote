@@ -29,9 +29,11 @@ var (
 	}
 
 	DefaultRegisteredAPIs = []ai.Api{
+		ai.ApiAnthropicMessages,
 		ai.ApiOpenAICompletions,
 		ai.ApiOpenAIResponses,
 		ai.ApiOpenAICodexResponses,
+		ai.ApiGoogleVertex,
 	}
 
 	gemini3ProPattern   = regexp.MustCompile(`(?i)gemini-3(?:\.\d+)?-pro`)

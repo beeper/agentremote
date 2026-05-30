@@ -50,8 +50,11 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 		if r.URL.Path != "/models" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
+		if r.URL.Query().Get("feature") != "bridge:ai" || r.URL.Query().Get("route") != "responses" {
+			t.Fatalf("unexpected query %s", r.URL.RawQuery)
+		}
 		gotAuth = r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.5","name":"GPT-5.5","context_length":1050000,"architecture":{"input_modalities":["text","image"]},"top_provider":{"max_completion_tokens":128000}},{"id":"beeper/fast","name":"Beeper Fast"}]}`))
+		_, _ = w.Write([]byte(`{"type":"com.beeper.ai.model_list","data":[{"id":"openai/gpt-5.5","name":"GPT-5.5","capabilities":{"input":{"modalities":["text","image"]},"output":{"modalities":["text"]},"reasoning":{"supported":true},"limits":{"context_tokens":1050000,"output_tokens":128000}}},{"id":"beeper/fast","name":"Beeper Fast","capabilities":{"input":{"modalities":["text"]},"output":{"modalities":["text"]}}}]}`))
 	}))
 	defer server.Close()
 
@@ -68,7 +71,7 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 		ID:       aiid.DefaultProvider,
 		Provider: ai.ProviderOpenAI,
 		API:      ai.ApiOpenAIResponses,
-		BaseURL:  server.URL + "/proxy/_/v1",
+		BaseURL:  server.URL + "/proxy/openai/v1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -76,11 +79,120 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 	if !strings.HasPrefix(gotAuth, "Bearer "+aiServicesAppserviceTokenPrefix) {
 		t.Fatalf("unexpected auth header %q", gotAuth)
 	}
-	if len(models) != 2 || models[0].ID != "gpt-5.5" || models[0].BaseURL != server.URL+"/proxy/_/v1" {
+	if len(models) != 2 || models[0].ID != "openai/gpt-5.5" || models[0].BaseURL != server.URL+"/proxy/openai/v1" {
 		t.Fatalf("unexpected models %#v", models)
 	}
 	if models[0].ContextWindow != 1050000 || models[0].MaxTokens != 128000 {
 		t.Fatalf("expected AI Services metadata, got %#v", models[0])
+	}
+	if !models[0].Reasoning {
+		t.Fatalf("expected AI Services reasoning metadata, got %#v", models[0])
+	}
+}
+
+func TestAIServicesModelsURLStripsProviderProxyPaths(t *testing.T) {
+	tests := map[string]string{
+		"https://ai-services.beeper.com/proxy/openai/v1":          "https://ai-services.beeper.com/models?feature=bridge%3Aai&route=responses",
+		"https://ai-services.beeper.com/proxy/openrouter/v1":      "https://ai-services.beeper.com/models?feature=bridge%3Aai&route=responses",
+		"https://ai-services.beeper.com/proxy/anthropic":          "https://ai-services.beeper.com/models?feature=bridge%3Aai&route=responses",
+		"https://ai-services.beeper.com/proxy/vertex":             "https://ai-services.beeper.com/models?feature=bridge%3Aai&route=responses",
+		"https://ai-services.beeper.com/proxy/_/v1/responses":     "https://ai-services.beeper.com/models?feature=bridge%3Aai&route=responses",
+		"https://ai-services.beeper.com/dev/proxy/openai/v1":      "https://ai-services.beeper.com/dev/models?feature=bridge%3Aai&route=responses",
+		"https://ai-services.beeper.com/dev/proxy/openrouter/v1/": "https://ai-services.beeper.com/dev/models?feature=bridge%3Aai&route=responses",
+	}
+	for input, want := range tests {
+		got, err := aiServicesModelsURL(input)
+		if err != nil {
+			t.Fatalf("aiServicesModelsURL(%q) returned error: %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("aiServicesModelsURL(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","provider":{"id":"wpcom_anthropic","model_id":"claude-sonnet-4-5","api":"openai-responses"}},
+			{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","provider":{"id":"wpcom_vertex","model_id":"gemini-2.5-flash-lite","api":"openai-responses"}},
+			{"id":"anthropic/claude-sonnet-4.5","name":"Claude via OpenRouter","provider":{"id":"openrouter","model_id":"anthropic/claude-sonnet-4.5","api":"openai-responses"}}
+		]}`))
+	}))
+	defer server.Close()
+
+	client := &Client{
+		Main: &Connector{
+			AppServiceToken:   "as-token",
+			HomeserverAddress: "https://matrix.beeper-staging.com/_hungryserv/test",
+		},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{UserMXID: "@alice:beeper-staging.com"}},
+	}
+	models, err := client.aiServicesCatalogModels(context.Background(), aiid.ProviderConfig{
+		ID:       aiid.DefaultProvider,
+		Provider: ai.ProviderOpenAI,
+		API:      ai.ApiOpenAIResponses,
+		BaseURL:  server.URL + "/proxy/openai/v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]ai.Model{}
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	if got := byID["claude-sonnet-4-5"]; got.API != ai.ApiAnthropicMessages || got.Provider != ai.ProviderAnthropic || got.BaseURL != server.URL+"/proxy/anthropic" {
+		t.Fatalf("unexpected Anthropic route %#v", got)
+	}
+	if got := byID["gemini-2.5-flash-lite"]; got.API != ai.ApiGoogleVertex || got.Provider != ai.ProviderGoogleVertex || got.BaseURL != server.URL+"/proxy/vertex" {
+		t.Fatalf("unexpected Vertex route %#v", got)
+	}
+	if got := byID["anthropic/claude-sonnet-4.5"]; got.API != ai.ApiOpenAIResponses || got.Provider != ai.ProviderOpenRouter || got.BaseURL != server.URL+"/proxy/openrouter/v1" {
+		t.Fatalf("unexpected OpenRouter route %#v", got)
+	}
+}
+
+func TestResolveModelForProviderPreservesOpenAICatalogModelID(t *testing.T) {
+	provider := aiid.ProviderConfig{
+		ID:       aiid.DefaultProvider,
+		Provider: ai.ProviderOpenAI,
+		API:      ai.ApiOpenAIResponses,
+		Models:   []ai.Model{{ID: "openai/gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
+		Enabled:  true,
+	}
+	model, ok := resolveModelForProvider(provider, "beeper/openai/gpt-5.5")
+	if !ok || model.ID != "openai/gpt-5.5" {
+		t.Fatalf("expected OpenAI catalog model to resolve, got ok=%v model=%#v", ok, model)
+	}
+	model, ok = resolveModelForProvider(provider, string(aiid.ModelContactID(aiid.DefaultProvider, "openai/gpt-5.5")))
+	if !ok || model.ID != "openai/gpt-5.5" {
+		t.Fatalf("expected OpenAI model contact to resolve, got ok=%v model=%#v", ok, model)
+	}
+}
+
+func TestResolveModelForProviderPassesCustomOpenAIProviderModelIDDirectly(t *testing.T) {
+	provider := aiid.ProviderConfig{
+		ID:       "custom-openai",
+		Provider: ai.ProviderOpenAI,
+		API:      ai.ApiOpenAIResponses,
+		Models:   []ai.Model{{ID: "gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
+		Enabled:  true,
+	}
+	if _, ok := resolveModelForProvider(provider, "custom-openai/openai/gpt-5.5"); ok {
+		t.Fatalf("custom OpenAI provider should not resolve an unlisted model ID")
+	}
+}
+
+func TestResolveModelForProviderDoesNotAcceptOpenAIAliasForNonOpenAIBeeperProvider(t *testing.T) {
+	provider := aiid.ProviderConfig{
+		ID:       aiid.DefaultProvider,
+		Provider: ai.ProviderOpenRouter,
+		API:      ai.ApiOpenAICompletions,
+		Models:   []ai.Model{{ID: "gpt-5", Provider: ai.ProviderOpenRouter, API: ai.ApiOpenAICompletions}},
+		Enabled:  true,
+	}
+	if _, ok := resolveModelForProvider(provider, "beeper/openai/gpt-5"); ok {
+		t.Fatalf("non-OpenAI Beeper provider should not resolve OpenAI catalog alias")
 	}
 }
 

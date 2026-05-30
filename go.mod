@@ -14,6 +14,7 @@ require (
 )
 
 require (
+	cloud.google.com/go/compute/metadata v0.3.0 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
 	github.com/lib/pq v1.12.3 // indirect
@@ -32,6 +33,7 @@ require (
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp v0.0.0-20260508232706-74f9aab9d74a // indirect
 	golang.org/x/net v0.54.0 // indirect
+	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/text v0.37.0 // indirect

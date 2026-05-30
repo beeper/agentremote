@@ -328,12 +328,13 @@ func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Por
 	if err != nil || len(contextView.Messages) < 2 {
 		return
 	}
-	auth, err := cl.authForProvider(provider)(ctx, model)
+	titleModel := cl.titleGenerationModel(provider, model)
+	auth, err := cl.authForProvider(provider)(ctx, titleModel)
 	if err != nil {
 		return
 	}
 	title, err := sessiontitle.Generate(ctx, contextView.Messages, sessiontitle.Options{
-		Model:   model,
+		Model:   titleModel,
 		APIKey:  auth.APIKey,
 		Headers: auth.Headers,
 	})
@@ -345,6 +346,28 @@ func (cl *Client) generateSessionTitle(ctx context.Context, portal *bridgev2.Por
 		return
 	}
 	cl.queueRoomTitleUpdate(portal.PortalKey, title)
+}
+
+func (cl *Client) titleGenerationModel(provider aiid.ProviderConfig, fallback ai.Model) ai.Model {
+	modelID := titleGenerationModelID(provider)
+	if modelID == "" || !providerAllowsModel(provider, modelID) {
+		return fallback
+	}
+	if cl != nil && cl.Main != nil {
+		return cl.Main.ModelForProvider(provider, modelID)
+	}
+	return normalizeProviderModel(modelForProviderCatalog(provider, modelID), provider)
+}
+
+func titleGenerationModelID(provider aiid.ProviderConfig) string {
+	switch provider.Provider {
+	case ai.ProviderOpenAI:
+		return defaultTitleGenerationModel
+	case ai.ProviderOpenRouter:
+		return openRouterTitleGenerationModel
+	default:
+		return ""
+	}
 }
 
 func (cl *Client) queueRoomTitleUpdate(portalKey networkid.PortalKey, title string) {

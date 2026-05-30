@@ -162,9 +162,18 @@ func TestStreamOpenAICodexResponsesUsesCodexSSEBackend(t *testing.T) {
 		OpenAIResponsesOptions: OpenAIResponsesOptions{StreamOptions: ai.StreamOptions{APIKey: token, SessionID: "session-1", Transport: ai.TransportSSE}},
 	})
 
+	var deltas []string
+	for event := range stream.Events() {
+		if event.Type == "text_delta" {
+			deltas = append(deltas, event.Delta)
+		}
+	}
 	result := stream.Result()
 	if result.StopReason != ai.StopReasonStop {
 		t.Fatalf("expected stop, got %#v", result)
+	}
+	if strings.Join(deltas, "") != "hello" {
+		t.Fatalf("expected streamed text delta, got %#v", deltas)
 	}
 	if requestPath != "/codex/responses" {
 		t.Fatalf("expected codex backend path, got %q", requestPath)

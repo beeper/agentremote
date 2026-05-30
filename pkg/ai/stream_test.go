@@ -3,6 +3,7 @@ package ai
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestStreamSimpleDispatchesRegisteredProvider(t *testing.T) {
@@ -75,6 +76,40 @@ func TestCreateAssistantMessageEventStreamFactory(t *testing.T) {
 	stream.Push(AssistantMessageEvent{Type: "done", Reason: StopReasonStop, Message: &message})
 	if result := stream.Result(); result.Role != "assistant" || result.StopReason != StopReasonStop {
 		t.Fatalf("unexpected result %#v", result)
+	}
+}
+
+func TestAssistantMessageEventStreamResultDrainsUndeliveredEvents(t *testing.T) {
+	stream := NewAssistantMessageEventStream()
+	go func() {
+		for i := 0; i < 128; i++ {
+			stream.Push(AssistantMessageEvent{Type: "text_delta", ContentIndex: 0, Delta: "x"})
+		}
+		message := Message{Role: "assistant", StopReason: StopReasonStop}
+		stream.Push(AssistantMessageEvent{Type: "done", Reason: StopReasonStop, Message: &message})
+	}()
+
+	resultCh := make(chan Message, 1)
+	go func() {
+		resultCh <- stream.Result()
+	}()
+	select {
+	case result := <-resultCh:
+		if result.Role != "assistant" || result.StopReason != StopReasonStop {
+			t.Fatalf("unexpected result %#v", result)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Result deadlocked without an event consumer")
+	}
+}
+
+func TestAssistantMessageEventStreamIgnoresPushAfterEnd(t *testing.T) {
+	stream := NewAssistantMessageEventStream()
+	stream.End()
+	message := Message{Role: "assistant", StopReason: StopReasonStop}
+	stream.Push(AssistantMessageEvent{Type: "done", Reason: StopReasonStop, Message: &message})
+	if result := stream.Result(); result.Role != "" {
+		t.Fatalf("expected empty result after manual end, got %#v", result)
 	}
 }
 

@@ -12,6 +12,7 @@ type EventStream[T any, R any] struct {
 	once   sync.Once
 	mu     sync.Mutex
 	result R
+	closed bool
 }
 
 func NewEventStream[T any, R any]() *EventStream[T, R] {
@@ -23,29 +24,40 @@ func (s *EventStream[T, R]) Events() <-chan T {
 }
 
 func (s *EventStream[T, R]) Push(event T) {
-	select {
-	case <-s.done:
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
 		return
-	default:
-		s.events <- event
 	}
+	s.events <- event
 }
 
 func (s *EventStream[T, R]) End(result R) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.once.Do(func() {
-		s.mu.Lock()
 		s.result = result
-		s.mu.Unlock()
+		s.closed = true
 		close(s.done)
 		close(s.events)
 	})
 }
 
 func (s *EventStream[T, R]) Result() R {
-	<-s.done
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.result
+	for {
+		select {
+		case <-s.done:
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			return s.result
+		case _, ok := <-s.events:
+			if !ok {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				return s.result
+			}
+		}
+	}
 }
 
 type AssistantMessageEventStream struct {

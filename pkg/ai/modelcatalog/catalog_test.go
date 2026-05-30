@@ -72,14 +72,14 @@ func TestBuildFetchesAndFiltersRuntimeSafeCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if catalog.Count() != 2 {
-		t.Fatalf("expected runtime-safe catalog to emit two models, got %d", catalog.Count())
+	if catalog.Count() != 4 {
+		t.Fatalf("expected runtime-safe catalog to emit four models, got %d", catalog.Count())
 	}
-	if _, ok := catalog.Models[ai.ProviderAnthropic]; ok {
-		t.Fatal("did not expect direct Anthropic models before the provider is registered")
+	if _, ok := catalog.Models[ai.ProviderAnthropic]["claude-sonnet-4-5"]; !ok {
+		t.Fatal("expected direct Anthropic model after provider registration")
 	}
-	if _, ok := catalog.Models[ai.ProviderGoogleVertex]; ok {
-		t.Fatal("did not expect Vertex models before the provider is registered")
+	if _, ok := catalog.Models[ai.ProviderGoogleVertex]["gemini-3-pro-preview"]; !ok {
+		t.Fatal("expected Vertex model after provider registration")
 	}
 	if got := catalog.Models[ai.ProviderOpenAI]["gpt-5.5"].ThinkingLevelMap[ai.ModelThinkingLevelXHigh]; got == nil || *got != "xhigh" {
 		t.Fatalf("expected gpt-5.5 xhigh metadata, got %#v", got)
@@ -87,8 +87,8 @@ func TestBuildFetchesAndFiltersRuntimeSafeCatalog(t *testing.T) {
 	if got := catalog.Models[ai.ProviderOpenRouter]["anthropic/claude-sonnet-4.5"].Compat["cacheControlFormat"]; got != "anthropic" {
 		t.Fatalf("expected OpenRouter Anthropic cache control compat, got %#v", got)
 	}
-	if len(catalog.Skipped) != 2 || catalog.Skipped[0] != ai.ProviderAnthropic || catalog.Skipped[1] != ai.ProviderGoogleVertex {
-		t.Fatalf("expected skipped Anthropic and Vertex, got %#v", catalog.Skipped)
+	if len(catalog.Skipped) != 0 {
+		t.Fatalf("expected no skipped registered providers, got %#v", catalog.Skipped)
 	}
 }
 

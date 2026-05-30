@@ -324,6 +324,7 @@ type AnthropicMessagesCompat struct {
 	SendSessionAffinityHeaders      *bool `json:"sendSessionAffinityHeaders,omitempty"`
 	SupportsCacheControlOnTools     *bool `json:"supportsCacheControlOnTools,omitempty"`
 	ForceAdaptiveThinking           *bool `json:"forceAdaptiveThinking,omitempty"`
+	AllowEmptySignature             *bool `json:"allowEmptySignature,omitempty"`
 }
 
 type OpenRouterRouting struct {
