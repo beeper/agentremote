@@ -38,7 +38,7 @@ func TestModelForProviderConstructsCustomModel(t *testing.T) {
 	}
 }
 
-func TestModelForProviderPreservesOpenAICatalogModelID(t *testing.T) {
+func TestModelForProviderBuildsDefaultProviderModelFromConfig(t *testing.T) {
 	conn := &Connector{}
 	provider := aiid.ProviderConfig{
 		ID:       aiid.DefaultProvider,
@@ -50,8 +50,8 @@ func TestModelForProviderPreservesOpenAICatalogModelID(t *testing.T) {
 	if model.ID != "openai/gpt-5.5" || model.Provider != ai.ProviderOpenAI || model.API != ai.ApiOpenAIResponses {
 		t.Fatalf("unexpected model %#v", model)
 	}
-	if !model.Reasoning {
-		t.Fatalf("expected model to use OpenAI catalog metadata")
+	if model.Reasoning || model.ContextWindow != 128000 || model.MaxTokens != 32000 {
+		t.Fatalf("expected config-derived model metadata, got %#v", model)
 	}
 }
 
@@ -108,7 +108,7 @@ func TestTitleGenerationModelUsesOpenRouterGPTMini(t *testing.T) {
 	}
 }
 
-func TestTitleGenerationModelFallsBackWhenProviderDisallowsGPTMini(t *testing.T) {
+func TestTitleGenerationModelAllowsProviderConfiguredModels(t *testing.T) {
 	client := &Client{Main: &Connector{}}
 	fallback := ai.Model{ID: "local-model", Provider: ai.Provider("local")}
 	provider := aiid.ProviderConfig{
@@ -118,8 +118,8 @@ func TestTitleGenerationModelFallsBackWhenProviderDisallowsGPTMini(t *testing.T)
 		AllowedModels: []string{fallback.ID},
 	}
 	model := client.titleGenerationModel(provider, fallback)
-	if model.ID != fallback.ID || model.Provider != fallback.Provider {
-		t.Fatalf("expected fallback model, got %#v", model)
+	if model.ID != defaultTitleGenerationModel || model.Provider != ai.ProviderOpenAI {
+		t.Fatalf("expected config-derived title model, got %#v", model)
 	}
 }
 
@@ -384,6 +384,31 @@ func TestFetchProviderModelsVerifiesAndBuildsModels(t *testing.T) {
 	}
 }
 
+func TestFetchProviderModelsRespectsPublishedProviderRoutes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"data":[
+			{"id":"claude-sonnet-4-5","name":"Claude Sonnet 4.5","provider":{"id":"wpcom_anthropic","model_id":"claude-sonnet-4-5","api":"openai-responses"}},
+			{"id":"gemini-2.5-flash-lite","name":"Gemini 2.5 Flash Lite","provider":{"id":"wpcom_vertex","model_id":"gemini-2.5-flash-lite","api":"openai-responses"}}
+		]}`))
+	}))
+	defer server.Close()
+
+	models, err := fetchProviderModels(context.Background(), ai.ApiOpenAIResponses, "local", server.URL+"/proxy/openai/v1", "key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]ai.Model{}
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	if got := byID["claude-sonnet-4-5"]; got.API != ai.ApiAnthropicMessages || got.Provider != ai.ProviderAnthropic || got.BaseURL != server.URL+"/proxy/anthropic" {
+		t.Fatalf("unexpected Anthropic route %#v", got)
+	}
+	if got := byID["gemini-2.5-flash-lite"]; got.API != ai.ApiGoogleVertex || got.Provider != ai.ProviderGoogleVertex || got.BaseURL != server.URL+"/proxy/vertex" {
+		t.Fatalf("unexpected Vertex route %#v", got)
+	}
+}
+
 func TestFetchProviderModelsRejectsFailedVerification(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad key", http.StatusUnauthorized)
@@ -443,12 +468,12 @@ func TestModelForProviderAppliesRouteBaseURLToDefaultModel(t *testing.T) {
 	if model.BaseURL != "https://ai-services.beeper.com/proxy/openai/v1" {
 		t.Fatalf("expected route base URL override, got %q", model.BaseURL)
 	}
-	if model.ContextWindow == 0 || model.MaxTokens == 0 {
-		t.Fatalf("expected generated model metadata to be preserved, got %#v", model)
+	if model.ContextWindow != 128000 || model.MaxTokens != 32000 {
+		t.Fatalf("expected config-derived model metadata, got %#v", model)
 	}
 }
 
-func TestResolveProviderValidatesExplicitModelList(t *testing.T) {
+func TestResolveProviderAllowsArbitraryModelWithExplicitModelList(t *testing.T) {
 	conn := &Connector{}
 	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		ID: "login",
@@ -466,10 +491,14 @@ func TestResolveProviderValidatesExplicitModelList(t *testing.T) {
 			DefaultProviderID: "custom",
 		},
 	}}
-	if _, _, err := conn.ResolveProvider(context.Background(), login, RoomConfig{ModelID: "missing"}); err == nil {
-		t.Fatalf("expected missing model to fail")
+	_, modelID, err := conn.ResolveProvider(context.Background(), login, RoomConfig{ModelID: "missing"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, modelID, err := conn.ResolveProvider(context.Background(), login, RoomConfig{ModelID: "allowed"})
+	if modelID != "missing" {
+		t.Fatalf("unexpected model ID %q", modelID)
+	}
+	_, modelID, err = conn.ResolveProvider(context.Background(), login, RoomConfig{ModelID: "allowed"})
 	if err != nil {
 		t.Fatal(err)
 	}

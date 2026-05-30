@@ -379,6 +379,11 @@ func resolveModelForProvider(provider aiid.ProviderConfig, identifier string) (a
 			return model, true
 		}
 	}
+	if !strings.Contains(identifier, "/") {
+		if model, ok := arbitraryModelForProvider(provider, identifier); ok {
+			return model, true
+		}
+	}
 	return ai.Model{}, false
 }
 

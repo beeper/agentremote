@@ -170,7 +170,7 @@ func TestResolveModelForProviderPreservesOpenAICatalogModelID(t *testing.T) {
 	}
 }
 
-func TestResolveModelForProviderPassesCustomOpenAIProviderModelIDDirectly(t *testing.T) {
+func TestResolveModelForProviderAcceptsArbitraryCustomModelID(t *testing.T) {
 	provider := aiid.ProviderConfig{
 		ID:       "custom-openai",
 		Provider: ai.ProviderOpenAI,
@@ -178,12 +178,17 @@ func TestResolveModelForProviderPassesCustomOpenAIProviderModelIDDirectly(t *tes
 		Models:   []ai.Model{{ID: "gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
 		Enabled:  true,
 	}
-	if _, ok := resolveModelForProvider(provider, "custom-openai/openai/gpt-5.5"); ok {
-		t.Fatalf("custom OpenAI provider should not resolve an unlisted model ID")
+	model, ok := resolveModelForProvider(provider, "custom-openai/openai/gpt-5.5")
+	if !ok || model.ID != "openai/gpt-5.5" {
+		t.Fatalf("expected arbitrary model ID to resolve, got ok=%v model=%#v", ok, model)
+	}
+	model, ok = resolveModelForProvider(provider, "whateveristyped")
+	if !ok || model.ID != "whateveristyped" {
+		t.Fatalf("expected bare arbitrary model ID to resolve, got ok=%v model=%#v", ok, model)
 	}
 }
 
-func TestResolveModelForProviderDoesNotAcceptOpenAIAliasForNonOpenAIBeeperProvider(t *testing.T) {
+func TestResolveModelForProviderAcceptsArbitraryDefaultProviderModelID(t *testing.T) {
 	provider := aiid.ProviderConfig{
 		ID:       aiid.DefaultProvider,
 		Provider: ai.ProviderOpenRouter,
@@ -191,8 +196,9 @@ func TestResolveModelForProviderDoesNotAcceptOpenAIAliasForNonOpenAIBeeperProvid
 		Models:   []ai.Model{{ID: "gpt-5", Provider: ai.ProviderOpenRouter, API: ai.ApiOpenAICompletions}},
 		Enabled:  true,
 	}
-	if _, ok := resolveModelForProvider(provider, "beeper/openai/gpt-5"); ok {
-		t.Fatalf("non-OpenAI Beeper provider should not resolve OpenAI catalog alias")
+	model, ok := resolveModelForProvider(provider, "beeper/openai/gpt-5")
+	if !ok || model.ID != "openai/gpt-5" || model.Provider != ai.ProviderOpenRouter {
+		t.Fatalf("expected arbitrary default provider model ID to resolve, got ok=%v model=%#v", ok, model)
 	}
 }
 
@@ -240,6 +246,33 @@ func TestSearchUsersFiltersModelContacts(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Fatalf("expected one result, got %#v", results)
+	}
+}
+
+func TestSearchUsersAddsArbitraryModelContact(t *testing.T) {
+	client := &Client{UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+		ID: "login",
+		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
+			"local": {
+				ID:          "local",
+				DisplayName: "Local",
+				Provider:    "local",
+				API:         ai.ApiOpenAIResponses,
+				Models:      []ai.Model{{ID: "listed"}},
+				Enabled:     true,
+			},
+		}},
+	}}}
+	results, err := client.SearchUsers(context.Background(), "whateveristyped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected arbitrary model contact, got %#v", results)
+	}
+	name := results[0].UserInfo.Name
+	if name == nil || *name != "Local: whateveristyped" {
+		t.Fatalf("unexpected arbitrary model contact name %#v", results[0].UserInfo)
 	}
 }
 
@@ -297,7 +330,7 @@ func TestContactListIncludesEnabledLoginProviders(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"beeper/gpt-5.5",
+		"beeper/beeper/default",
 		"openrouter/anthropic/claude-sonnet-4.5",
 		"custom/custom-model",
 	} {
