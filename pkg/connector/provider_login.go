@@ -47,11 +47,6 @@ func (cl *ProviderLoginClient) LogoutRemote(ctx context.Context) {
 	if err == nil {
 		if meta, ok := parent.Metadata.(*aiid.UserLoginMetadata); ok && meta.Providers != nil {
 			delete(meta.Providers, providerID)
-			if meta.DefaultProviderID == providerID {
-				meta.DefaultProviderID = ""
-				meta.DefaultModelID = ""
-				ensureMetadataDefaults(meta, cl.Main.defaultProviderConfig())
-			}
 			_ = parent.Save(ctx)
 		}
 	}
@@ -118,7 +113,7 @@ func (cl *ProviderLoginClient) ResolveIdentifier(ctx context.Context, identifier
 		return nil, err
 	}
 	provider, ok := parent.loginMetadata().Providers[providerID]
-	if !ok || !provider.Enabled {
+	if !ok {
 		return nil, fmt.Errorf("provider %s is not available", providerID)
 	}
 	model, ok := resolveModelForProvider(provider, identifier)
@@ -158,19 +153,16 @@ func (cl *ProviderLoginClient) parentClient(ctx context.Context) (*Client, strin
 }
 
 func (cl *ProviderLoginClient) parentLogin(ctx context.Context) (*bridgev2.UserLogin, string, error) {
-	meta, ok := cl.UserLogin.Metadata.(*aiid.UserLoginMetadata)
-	if !ok || meta.Kind != aiid.LoginKindProvider || meta.ParentLoginID == "" || meta.ProviderID == "" {
+	parentID, providerID, ok := aiid.ParseProviderLoginID(cl.UserLogin.ID)
+	if !ok {
 		return nil, "", fmt.Errorf("login %s is not a provider login", cl.UserLogin.ID)
 	}
-	parentID := networkid.UserLoginID(meta.ParentLoginID)
 	if cl.Main == nil || cl.Main.Bridge == nil {
 		return &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 			ID:       parentID,
 			UserMXID: cl.UserLogin.UserMXID,
-			Metadata: &aiid.UserLoginMetadata{
-				Kind: aiid.LoginKindMain,
-			},
-		}}, meta.ProviderID, nil
+			Metadata: &aiid.UserLoginMetadata{},
+		}}, providerID, nil
 	}
 	parent, err := cl.Main.Bridge.GetExistingUserLoginByID(ctx, parentID)
 	if err != nil {
@@ -179,13 +171,13 @@ func (cl *ProviderLoginClient) parentLogin(ctx context.Context) (*bridgev2.UserL
 	if parent == nil || parent.UserMXID != cl.UserLogin.UserMXID {
 		return nil, "", fmt.Errorf("parent login %s is unavailable", parentID)
 	}
-	return parent, meta.ProviderID, nil
+	return parent, providerID, nil
 }
 
 func (cl *ProviderLoginClient) parentLoginID() networkid.UserLoginID {
 	if cl != nil && cl.UserLogin != nil {
-		if meta, ok := cl.UserLogin.Metadata.(*aiid.UserLoginMetadata); ok && meta.ParentLoginID != "" {
-			return networkid.UserLoginID(meta.ParentLoginID)
+		if parentID, _, ok := aiid.ParseProviderLoginID(cl.UserLogin.ID); ok {
+			return parentID
 		}
 		return cl.UserLogin.ID
 	}
@@ -205,7 +197,7 @@ func (cl *ProviderLoginClient) provider(ctx context.Context) (aiid.ProviderConfi
 		return aiid.ProviderConfig{}, false, err
 	}
 	provider, ok := parent.loginMetadata().Providers[providerID]
-	if !ok || !provider.Enabled {
+	if !ok {
 		return aiid.ProviderConfig{}, false, nil
 	}
 	return provider, true, nil

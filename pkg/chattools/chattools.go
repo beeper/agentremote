@@ -205,11 +205,17 @@ type SearchResult struct {
 }
 
 type SearchItem struct {
-	Title    string         `json:"title"`
-	URL      string         `json:"url"`
-	Snippet  string         `json:"snippet,omitempty"`
-	Source   string         `json:"source,omitempty"`
-	Metadata map[string]any `json:"metadata,omitempty"`
+	Title       string         `json:"title"`
+	URL         string         `json:"url"`
+	Snippet     string         `json:"snippet,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Published   string         `json:"published,omitempty"`
+	SiteName    string         `json:"siteName,omitempty"`
+	Author      string         `json:"author,omitempty"`
+	Image       string         `json:"image,omitempty"`
+	Favicon     string         `json:"favicon,omitempty"`
+	Source      string         `json:"source,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 func Search(ctx context.Context, query string, limit int, options SearchOptions) (SearchResult, error) {
@@ -226,7 +232,7 @@ func Search(ctx context.Context, query string, limit int, options SearchOptions)
 	if client == nil {
 		client = &http.Client{Timeout: options.Timeout}
 	}
-	payload, _ := json.Marshal(map[string]any{"query": query, "limit": limit})
+	payload, _ := json.Marshal(map[string]any{"query": query, "numResults": limit, "useAutoprompt": false})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, options.Endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return SearchResult{}, err
@@ -243,10 +249,11 @@ func Search(ctx context.Context, query string, limit int, options SearchOptions)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return SearchResult{}, fmt.Errorf("search failed with HTTP %d", resp.StatusCode)
 	}
-	var result SearchResult
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1024*1024)).Decode(&result); err != nil {
+	var body searchResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1024*1024)).Decode(&body); err != nil {
 		return SearchResult{}, err
 	}
+	result := body.result()
 	if result.Query == "" {
 		result.Query = query
 	}
@@ -254,6 +261,55 @@ func Search(ctx context.Context, query string, limit int, options SearchOptions)
 		result.Results = result.Results[:limit]
 	}
 	return result, nil
+}
+
+type searchResponse struct {
+	Query   string               `json:"query"`
+	Results []searchResponseItem `json:"results"`
+}
+
+type searchResponseItem struct {
+	Title         string         `json:"title"`
+	URL           string         `json:"url"`
+	Snippet       string         `json:"snippet"`
+	Text          string         `json:"text"`
+	Description   string         `json:"description"`
+	Published     string         `json:"published"`
+	PublishedDate string         `json:"publishedDate"`
+	SiteName      string         `json:"siteName"`
+	Author        string         `json:"author"`
+	Image         string         `json:"image"`
+	Favicon       string         `json:"favicon"`
+	Source        string         `json:"source"`
+	Metadata      map[string]any `json:"metadata"`
+}
+
+func (body searchResponse) result() SearchResult {
+	result := SearchResult{Query: body.Query, Results: make([]SearchItem, 0, len(body.Results))}
+	for _, item := range body.Results {
+		snippet := item.Snippet
+		if snippet == "" {
+			snippet = item.Text
+		}
+		published := item.Published
+		if published == "" {
+			published = item.PublishedDate
+		}
+		result.Results = append(result.Results, SearchItem{
+			Title:       item.Title,
+			URL:         item.URL,
+			Snippet:     snippet,
+			Description: item.Description,
+			Published:   published,
+			SiteName:    item.SiteName,
+			Author:      item.Author,
+			Image:       item.Image,
+			Favicon:     item.Favicon,
+			Source:      item.Source,
+			Metadata:    item.Metadata,
+		})
+	}
+	return result
 }
 
 func jsonResult(value any) (agent.AgentToolResult[any], error) {

@@ -2,7 +2,6 @@ package connector
 
 import (
 	_ "embed"
-	"net/url"
 	"strings"
 
 	up "go.mau.fi/util/configupgrade"
@@ -12,29 +11,21 @@ import (
 //go:embed example-config.yaml
 var ExampleConfig string
 
-const defaultAIServicesProxyPrefix = "https://ai-services."
 const defaultAIServicesProxyPath = "/proxy/openai/v1"
 const defaultBeeperAIModel = "beeper/default"
 const defaultTitleGenerationModel = "gpt-5-mini"
 const openRouterTitleGenerationModel = "openai/gpt-5-mini"
 
 type Config struct {
-	DefaultSystemPrompt   string       `yaml:"default_system_prompt"`
-	DefaultReasoningLevel string       `yaml:"default_reasoning_level"`
-	Fetch                 FetchConfig  `yaml:"fetch"`
-	Search                SearchConfig `yaml:"search"`
+	DefaultSystemPrompt   string      `yaml:"default_system_prompt"`
+	DefaultReasoningLevel string      `yaml:"default_reasoning_level"`
+	Fetch                 FetchConfig `yaml:"fetch"`
 }
 
 type FetchConfig struct {
 	TimeoutMS int   `yaml:"timeout_ms"`
 	MaxBytes  int64 `yaml:"max_bytes"`
 	MaxChars  int   `yaml:"max_chars"`
-}
-
-type SearchConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	Endpoint string `yaml:"endpoint"`
-	APIKey   string `yaml:"api_key"`
 }
 
 type umConfig Config
@@ -69,31 +60,10 @@ func normalizeResponsesBaseURL(baseURL string) string {
 	return strings.TrimSuffix(baseURL, "/responses")
 }
 
-func defaultAIServicesProxyBaseURL(homeserverAddress string) string {
-	domain := normalizeHomeserverAddress(homeserverAddress)
-	if domain == "" {
-		return ""
-	}
-	return defaultAIServicesProxyPrefix + domain + defaultAIServicesProxyPath
-}
-
-func normalizeHomeserverAddress(value string) string {
-	value = strings.TrimSpace(value)
-	if parsed, err := url.Parse(value); err == nil && parsed.Host != "" {
-		value = parsed.Host
-	}
-	value = strings.TrimPrefix(value, "https://")
-	value = strings.TrimPrefix(value, "http://")
-	value = strings.Trim(value, "/")
-	value = strings.TrimPrefix(value, "matrix.")
-	return value
-}
-
 func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Str, "default_system_prompt")
 	helper.Copy(up.Str, "default_reasoning_level")
 	helper.Copy(up.Map, "fetch")
-	helper.Copy(up.Map, "search")
 }
 
 func (c *Connector) GetConfig() (string, any, up.Upgrader) {

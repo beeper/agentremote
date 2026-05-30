@@ -4,7 +4,3 @@ fetch:
   timeout_ms: 10000
   max_bytes: 2097152
   max_chars: 20000
-search:
-  enabled: false
-  endpoint: ""
-  api_key: ""

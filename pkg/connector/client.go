@@ -226,7 +226,7 @@ func (cl *Client) handleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixM
 
 func (cl *Client) handleMatrixMessageWithConfig(ctx context.Context, msg *bridgev2.MatrixMessage, roomConfig RoomConfig) (*bridgev2.MatrixMessageResponse, error) {
 	portalMeta := portalMetadata(msg.Portal)
-	provider, modelID, err := cl.Main.ResolveProvider(ctx, cl.UserLogin, roomConfig)
+	provider, modelID, err := cl.resolveProvider(ctx, roomConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -725,7 +725,7 @@ func (cl *Client) ensureUsablePortal(portal *bridgev2.Portal) error {
 func (cl *Client) defaultConversationTitle(ctx context.Context, portal *bridgev2.Portal) string {
 	if cl != nil && cl.Main != nil && portal != nil && portal.MXID != "" {
 		if roomConfig, _, err := cl.Main.ReadRoomConfig(ctx, portal.MXID); err == nil {
-			if provider, modelID, err := cl.Main.ResolveProvider(ctx, cl.UserLogin, roomConfig); err == nil && roomConfig.modelStatePresent {
+			if provider, modelID, err := cl.resolveProvider(ctx, roomConfig); err == nil && roomConfig.modelStatePresent {
 				model := cl.Main.ModelForProvider(provider, modelID)
 				if resolved, ok := resolveModelForProvider(provider, modelID); ok {
 					model = resolved
@@ -737,7 +737,7 @@ func (cl *Client) defaultConversationTitle(ctx context.Context, portal *bridgev2
 	return "New AI Chat"
 }
 
-func (cl *Client) assistantEvent(portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, descriptor *event.BeeperStreamInfo, run aistream.Run) (*simplevent.PreConvertedMessage, *aiid.MessageMetadata) {
+func (cl *Client) assistantEvent(ctx context.Context, portalKey networkid.PortalKey, messageID networkid.MessageID, providerID string, modelID string, runID string, descriptor *event.BeeperStreamInfo, run aistream.Run) (*simplevent.PreConvertedMessage, *aiid.MessageMetadata) {
 	metadata := &aiid.MessageMetadata{
 		Role:         "assistant",
 		ProviderID:   providerID,
@@ -749,7 +749,7 @@ func (cl *Client) assistantEvent(portalKey networkid.PortalKey, messageID networ
 	if len(msg.Data.Parts) > 0 {
 		msg.Data.Parts[0].ID = aiid.PartID("text")
 		msg.Data.Parts[0].Content.BeeperStream = descriptor
-		cl.applyModelProfile(msg.Data.Parts[0].Content, providerID, modelID)
+		cl.applyModelProfile(ctx, msg.Data.Parts[0].Content, providerID, modelID)
 		msg.Data.Parts[0].DBMetadata = metadata
 	}
 	return msg, metadata
@@ -776,7 +776,7 @@ func (cl *Client) assistantFinalEdit(portalKey networkid.PortalKey, messageID ne
 			existing[0].Metadata = metadata
 		}
 		if len(converted.ModifiedParts) > 0 && converted.ModifiedParts[0].Content != nil {
-			cl.applyModelProfile(converted.ModifiedParts[0].Content, providerID, modelID)
+			cl.applyModelProfile(ctx, converted.ModifiedParts[0].Content, providerID, modelID)
 		}
 		return converted, nil
 	}
@@ -795,13 +795,17 @@ func (cl *Client) queueAssistantFinal(portalKey networkid.PortalKey, messageID n
 	cl.UserLogin.QueueRemoteEvent(cl.assistantFinalEdit(portalKey, messageID, providerID, modelID, runID, run, message, metadata))
 }
 
-func (cl *Client) applyModelProfile(content *event.MessageEventContent, providerID string, modelID string) {
+func (cl *Client) applyModelProfile(ctx context.Context, content *event.MessageEventContent, providerID string, modelID string) {
 	if content == nil {
 		return
 	}
 	displayName := modelID
+	var avatarURL *id.ContentURIString
 	if loginMeta := cl.loginMetadata(); loginMeta != nil {
 		if provider, ok := loginMeta.Providers[providerID]; ok {
+			if refreshed, err := cl.providerWithCatalogModelsStrict(ctx, provider); err == nil {
+				provider = refreshed
+			}
 			model := ai.Model{ID: modelID, Name: modelID}
 			if resolved, ok := resolveModelForProvider(provider, modelID); ok {
 				model = resolved
@@ -809,11 +813,15 @@ func (cl *Client) applyModelProfile(content *event.MessageEventContent, provider
 				model = cl.Main.ModelForProvider(provider, modelID)
 			}
 			displayName = modelDisplayName(provider, model)
+			if mxc := cl.ensureModelAvatar(ctx, provider, model); mxc != "" {
+				avatarURL = &mxc
+			}
 		}
 	}
 	content.BeeperPerMessageProfile = &event.BeeperPerMessageProfile{
 		ID:          providerID + "/" + modelID,
 		Displayname: displayName,
+		AvatarURL:   avatarURL,
 		HasFallback: true,
 	}
 }
@@ -839,7 +847,7 @@ func (cl *Client) assistantStreamPublisher(publisher bridgev2.BeeperStreamPublis
 		if err != nil {
 			return hookStreamError(err)
 		}
-		assistantEvent, metadata := cl.assistantEvent(portal.PortalKey, messageID, provider.ID, model.ID, runID, descriptor, *run)
+		assistantEvent, metadata := cl.assistantEvent(ctx, portal.PortalKey, messageID, provider.ID, model.ID, runID, descriptor, *run)
 		cl.UserLogin.QueueRemoteEvent(assistantEvent)
 		if err := publisher.Register(ctx, portal.MXID, eventID, descriptor); err != nil {
 			cl.queueAssistantRunError(portal.PortalKey, messageID, provider.ID, model.ID, runID, *run, metadata, err)
@@ -1235,7 +1243,11 @@ func appendToolOutputs(run *aistream.Run, outputs []toolOutputEvent) {
 	}
 	writer := aistream.NewWriter(run, time.Now)
 	for _, output := range outputs {
-		writer.ToolEnd(output.ID, output.Name, output.Input, toolOutput(output.Result, output.IsError))
+		structuredOutput := toolOutput(output.Result, output.IsError)
+		writer.ToolEnd(output.ID, output.Name, output.Input, structuredOutput)
+		for _, source := range webSearchSourceParts(output.Name, structuredOutput, output.IsError) {
+			writer.Custom("com.beeper.source", source)
+		}
 	}
 }
 
@@ -1561,7 +1573,11 @@ func (r *activeAIRun) publishToolOutput(ctx context.Context, publisher bridgev2.
 	stream.publish.mu.Lock()
 	defer stream.publish.mu.Unlock()
 	writer := aistream.NewWriter(stream.run, time.Now)
-	writer.ToolEnd(output.ID, output.Name, output.Input, toolOutput(output.Result, output.IsError))
+	structuredOutput := toolOutput(output.Result, output.IsError)
+	writer.ToolEnd(output.ID, output.Name, output.Input, structuredOutput)
+	for _, source := range webSearchSourceParts(output.Name, structuredOutput, output.IsError) {
+		writer.Custom("com.beeper.source", source)
+	}
 	return publishNewStreamEvents(ctx, publisher, roomID, stream.eventID, stream.run, &stream.publish)
 }
 

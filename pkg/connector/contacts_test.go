@@ -15,7 +15,7 @@ import (
 )
 
 func TestModelContactsExposeConfiguredModels(t *testing.T) {
-	client := &Client{UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		ID: "login",
 		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
 			"local": {
@@ -24,7 +24,6 @@ func TestModelContactsExposeConfiguredModels(t *testing.T) {
 				Provider:    "local",
 				API:         ai.ApiOpenAIResponses,
 				Models:      []ai.Model{{ID: "model-a"}, {ID: "model-b", Name: "Model Bee"}},
-				Enabled:     true,
 			},
 		}},
 	}}}
@@ -60,11 +59,10 @@ func TestAIServicesCatalogModelsFetchesVisibleModels(t *testing.T) {
 
 	client := &Client{
 		Main: &Connector{
-			AppServiceToken:   "as-token",
-			HomeserverAddress: "https://matrix.beeper-staging.com/_hungryserv/test",
+			AppServiceToken: "as-token",
 		},
 		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
-			UserMXID: "@alice:beeper-staging.com",
+			UserMXID: "@test:beeper-staging.com",
 		}},
 	}
 	models, err := client.aiServicesCatalogModels(context.Background(), aiid.ProviderConfig{
@@ -123,10 +121,9 @@ func TestAIServicesCatalogModelsUsesPublishedProviderRoutes(t *testing.T) {
 
 	client := &Client{
 		Main: &Connector{
-			AppServiceToken:   "as-token",
-			HomeserverAddress: "https://matrix.beeper-staging.com/_hungryserv/test",
+			AppServiceToken: "as-token",
 		},
-		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{UserMXID: "@alice:beeper-staging.com"}},
+		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{UserMXID: "@test:beeper-staging.com"}},
 	}
 	models, err := client.aiServicesCatalogModels(context.Background(), aiid.ProviderConfig{
 		ID:       aiid.DefaultProvider,
@@ -158,7 +155,6 @@ func TestResolveModelForProviderPreservesOpenAICatalogModelID(t *testing.T) {
 		Provider: ai.ProviderOpenAI,
 		API:      ai.ApiOpenAIResponses,
 		Models:   []ai.Model{{ID: "openai/gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
-		Enabled:  true,
 	}
 	model, ok := resolveModelForProvider(provider, "beeper/openai/gpt-5.5")
 	if !ok || model.ID != "openai/gpt-5.5" {
@@ -176,7 +172,6 @@ func TestResolveModelForProviderAcceptsArbitraryCustomModelID(t *testing.T) {
 		Provider: ai.ProviderOpenAI,
 		API:      ai.ApiOpenAIResponses,
 		Models:   []ai.Model{{ID: "gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
-		Enabled:  true,
 	}
 	model, ok := resolveModelForProvider(provider, "custom-openai/openai/gpt-5.5")
 	if !ok || model.ID != "openai/gpt-5.5" {
@@ -188,17 +183,15 @@ func TestResolveModelForProviderAcceptsArbitraryCustomModelID(t *testing.T) {
 	}
 }
 
-func TestResolveModelForProviderAcceptsArbitraryDefaultProviderModelID(t *testing.T) {
+func TestResolveModelForProviderRejectsArbitraryDefaultProviderModelID(t *testing.T) {
 	provider := aiid.ProviderConfig{
 		ID:       aiid.DefaultProvider,
 		Provider: ai.ProviderOpenRouter,
 		API:      ai.ApiOpenAICompletions,
 		Models:   []ai.Model{{ID: "gpt-5", Provider: ai.ProviderOpenRouter, API: ai.ApiOpenAICompletions}},
-		Enabled:  true,
 	}
-	model, ok := resolveModelForProvider(provider, "beeper/openai/gpt-5")
-	if !ok || model.ID != "openai/gpt-5" || model.Provider != ai.ProviderOpenRouter {
-		t.Fatalf("expected arbitrary default provider model ID to resolve, got ok=%v model=%#v", ok, model)
+	if model, ok := resolveModelForProvider(provider, "beeper/openai/gpt-5"); ok {
+		t.Fatalf("expected arbitrary default provider model ID to be rejected, got %#v", model)
 	}
 }
 
@@ -230,13 +223,12 @@ func TestAIChatMembersUseGlobalAssistantGhost(t *testing.T) {
 }
 
 func TestSearchUsersFiltersModelContacts(t *testing.T) {
-	client := &Client{UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		ID: "login",
 		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
 			"local": {
-				ID:      "local",
-				Models:  []ai.Model{{ID: "small"}, {ID: "large"}},
-				Enabled: true,
+				ID:     "local",
+				Models: []ai.Model{{ID: "small"}, {ID: "large"}},
 			},
 		}},
 	}}}
@@ -250,7 +242,7 @@ func TestSearchUsersFiltersModelContacts(t *testing.T) {
 }
 
 func TestSearchUsersAddsArbitraryModelContact(t *testing.T) {
-	client := &Client{UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
+	client := &Client{Main: &Connector{}, UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		ID: "login",
 		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
 			"local": {
@@ -259,7 +251,6 @@ func TestSearchUsersAddsArbitraryModelContact(t *testing.T) {
 				Provider:    "local",
 				API:         ai.ApiOpenAIResponses,
 				Models:      []ai.Model{{ID: "listed"}},
-				Enabled:     true,
 			},
 		}},
 	}}}
@@ -276,43 +267,31 @@ func TestSearchUsersAddsArbitraryModelContact(t *testing.T) {
 	}
 }
 
-func TestContactListIncludesEnabledLoginProviders(t *testing.T) {
-	conn := &Connector{HomeserverAddress: "https://matrix.beeper-staging.com/_hungryserv/test"}
+func TestContactListIncludesLoginProviders(t *testing.T) {
+	conn := &Connector{}
 	client := &Client{
 		Main: conn,
 		UserLogin: &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 			ID: "login",
 			Metadata: &aiid.UserLoginMetadata{
-				SyntheticDefault: true,
 				Providers: map[string]aiid.ProviderConfig{
 					"openrouter": {
-						ID:            "openrouter",
-						DisplayName:   "OpenRouter",
-						Provider:      ai.ProviderOpenRouter,
-						API:           ai.ApiOpenAICompletions,
-						BaseURL:       "https://openrouter.ai/api/v1",
-						DefaultModel:  "anthropic/claude-sonnet-4.5",
-						AllowedModels: []string{"anthropic/claude-sonnet-4.5"},
-						Enabled:       true,
+						ID:           "openrouter",
+						DisplayName:  "OpenRouter",
+						Provider:     ai.ProviderOpenRouter,
+						API:          ai.ApiOpenAICompletions,
+						BaseURL:      "https://openrouter.ai/api/v1",
+						DefaultModel: "anthropic/claude-sonnet-4.5",
+						Models:       []ai.Model{{ID: "anthropic/claude-sonnet-4.5"}},
 					},
 					"custom": {
-						ID:            "custom",
-						DisplayName:   "Custom",
-						Provider:      "custom",
-						API:           ai.ApiOpenAIResponses,
-						BaseURL:       "https://custom.test/v1",
-						DefaultModel:  "custom-model",
-						AllowedModels: []string{"custom-model"},
-						Enabled:       true,
-					},
-					"disabled": {
-						ID:            "disabled",
-						DisplayName:   "Disabled",
-						Provider:      ai.ProviderOpenAI,
-						API:           ai.ApiOpenAIResponses,
-						DefaultModel:  "gpt-5",
-						AllowedModels: []string{"gpt-5"},
-						Enabled:       false,
+						ID:           "custom",
+						DisplayName:  "Custom",
+						Provider:     "custom",
+						API:          ai.ApiOpenAIResponses,
+						BaseURL:      "https://custom.test/v1",
+						DefaultModel: "custom-model",
+						Models:       []ai.Model{{ID: "custom-model"}},
 					},
 				},
 			},
@@ -330,7 +309,6 @@ func TestContactListIncludesEnabledLoginProviders(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"beeper/beeper/default",
 		"openrouter/anthropic/claude-sonnet-4.5",
 		"custom/custom-model",
 	} {
@@ -339,6 +317,6 @@ func TestContactListIncludesEnabledLoginProviders(t *testing.T) {
 		}
 	}
 	if got["disabled/gpt-5"] {
-		t.Fatalf("disabled provider leaked into contact list: %#v", got)
+		t.Fatalf("unexpected provider leaked into contact list: %#v", got)
 	}
 }

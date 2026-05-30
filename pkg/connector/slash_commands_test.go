@@ -128,22 +128,20 @@ func canonicalTestClient() *Client {
 	login := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
 		ID: "login",
 		Metadata: &aiid.UserLoginMetadata{
-			DefaultProviderID: "beeper",
 			Providers: map[string]aiid.ProviderConfig{
 				"beeper": {
 					ID:           "beeper",
 					Provider:     ai.ProviderOpenAI,
 					API:          ai.ApiOpenAIResponses,
 					DefaultModel: "gpt-5.5",
-					Enabled:      true,
+					Models:       []ai.Model{{ID: "gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}, {ID: "openai/gpt-5.5", Provider: ai.ProviderOpenAI, API: ai.ApiOpenAIResponses}},
 				},
 				"openrouter": {
-					ID:            "openrouter",
-					Provider:      ai.ProviderOpenRouter,
-					API:           ai.ApiOpenAICompletions,
-					DefaultModel:  "openai/gpt-5",
-					AllowedModels: []string{"openai/gpt-5"},
-					Enabled:       true,
+					ID:           "openrouter",
+					Provider:     ai.ProviderOpenRouter,
+					API:          ai.ApiOpenAICompletions,
+					DefaultModel: "openai/gpt-5",
+					Models:       []ai.Model{{ID: "openai/gpt-5", Provider: ai.ProviderOpenRouter, API: ai.ApiOpenAICompletions}},
 				},
 			},
 		},

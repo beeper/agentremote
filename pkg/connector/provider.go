@@ -30,6 +30,30 @@ func (c *Connector) ModelForProvider(provider aiid.ProviderConfig, modelID strin
 	return normalizeProviderModel(modelForProviderConfig(provider, modelID), provider)
 }
 
+func (cl *Client) resolveProvider(ctx context.Context, roomConfig RoomConfig) (aiid.ProviderConfig, string, error) {
+	provider, modelID, err := cl.Main.ResolveProvider(ctx, cl.UserLogin, roomConfig)
+	if err != nil {
+		return aiid.ProviderConfig{}, "", err
+	}
+	if provider.ID != aiid.DefaultProvider {
+		return provider, modelID, nil
+	}
+	provider, err = cl.providerWithCatalogModelsStrict(ctx, provider)
+	if err != nil {
+		return aiid.ProviderConfig{}, "", err
+	}
+	if len(provider.Models) == 0 {
+		return aiid.ProviderConfig{}, "", fmt.Errorf("Beeper AI model catalog is unavailable")
+	}
+	if providerHasModel(provider, modelID) {
+		return provider, modelID, nil
+	}
+	if roomConfig.ModelID == "" {
+		return provider, provider.Models[0].ID, nil
+	}
+	return aiid.ProviderConfig{}, "", fmt.Errorf("model %s is not available for provider %s", modelID, provider.ID)
+}
+
 func modelForProviderConfig(provider aiid.ProviderConfig, modelID string) ai.Model {
 	return ai.Model{
 		ID:            modelID,
@@ -64,70 +88,8 @@ func normalizeProviderModel(model ai.Model, provider aiid.ProviderConfig) ai.Mod
 	if len(model.Input) == 0 {
 		model.Input = []string{"text"}
 	}
-	if override, ok := provider.ModelOverrides[model.ID]; ok {
-		model = applyModelOverride(model, override)
-	}
 	model.BaseURL = normalizeResponsesBaseURL(model.BaseURL)
 	return model
-}
-
-func applyModelOverride(model ai.Model, override aiid.ModelOverride) ai.Model {
-	if override.Name != "" {
-		model.Name = override.Name
-	}
-	if override.API != "" {
-		model.API = override.API
-	}
-	if override.BaseURL != "" {
-		model.BaseURL = override.BaseURL
-	}
-	if override.Reasoning != nil {
-		model.Reasoning = *override.Reasoning
-	}
-	if len(override.Input) > 0 {
-		model.Input = override.Input
-	}
-	if override.ContextWindow > 0 {
-		model.ContextWindow = override.ContextWindow
-	}
-	if override.MaxTokens > 0 {
-		model.MaxTokens = override.MaxTokens
-	}
-	if len(override.Headers) > 0 {
-		model.Headers = mergeStringMaps(model.Headers, override.Headers)
-	}
-	if len(override.Compat) > 0 {
-		model.Compat = mergeAnyMaps(model.Compat, override.Compat)
-	}
-	return model
-}
-
-func mergeStringMaps(base map[string]string, override map[string]string) map[string]string {
-	out := map[string]string{}
-	for key, value := range base {
-		out[key] = value
-	}
-	for key, value := range override {
-		out[key] = value
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func mergeAnyMaps(base map[string]any, override map[string]any) map[string]any {
-	out := map[string]any{}
-	for key, value := range base {
-		out[key] = value
-	}
-	for key, value := range override {
-		out[key] = value
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
 func (cl *Client) authForProvider(provider aiid.ProviderConfig) func(context.Context, ai.Model) (*harness.AgentHarnessAuth, error) {
@@ -161,9 +123,9 @@ func (cl *Client) defaultProviderBearerToken() (string, error) {
 	if cl.Main.AppServiceToken == "" {
 		return "", fmt.Errorf("missing appservice token for default provider")
 	}
-	username := usernameFromHomeserverAddress(cl.Main.HomeserverAddress)
+	username := cl.defaultProviderUsername()
 	if username == "" {
-		return "", fmt.Errorf("missing hungryserv username in homeserver address for default provider")
+		return "", fmt.Errorf("missing Beeper username for default provider")
 	}
 	payload, err := json.Marshal(aiServicesAppserviceToken{
 		ASToken:  cl.Main.AppServiceToken,
@@ -175,13 +137,11 @@ func (cl *Client) defaultProviderBearerToken() (string, error) {
 	return aiServicesAppserviceTokenPrefix + base64.RawURLEncoding.EncodeToString(payload), nil
 }
 
-func usernameFromHomeserverAddress(address string) string {
-	_, username, ok := strings.Cut(strings.TrimSpace(address), "/_hungryserv/")
-	if !ok {
+func (cl *Client) defaultProviderUsername() string {
+	if cl == nil || cl.UserLogin == nil || cl.UserLogin.UserLogin == nil {
 		return ""
 	}
-	username, _, _ = strings.Cut(username, "/")
-	return username
+	return cl.UserLogin.UserMXID.Localpart()
 }
 
 func (cl *Client) refreshProviderIfNeeded(ctx context.Context, provider aiid.ProviderConfig) (aiid.ProviderConfig, error) {

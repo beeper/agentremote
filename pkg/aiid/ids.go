@@ -10,28 +10,38 @@ import (
 )
 
 const (
-	NetworkID         = "ai"
-	BeeperBridgeType  = "ai"
-	DefaultLoginName  = "beeper"
-	DefaultProvider   = "beeper"
-	LoginKindMain     = "main"
-	LoginKindProvider = "provider"
-	RoomToolsType     = "com.beeper.ai.tools"
-	RoomModelType     = "com.beeper.ai.model"
-	RoomPromptType    = "com.beeper.ai.additional_prompt"
-	StreamType        = "com.beeper.stream"
+	NetworkID        = "ai"
+	BeeperBridgeType = "ai"
+	DefaultLoginName = "beeper"
+	DefaultProvider  = "beeper"
+	RoomToolsType    = "com.beeper.ai.tools"
+	RoomModelType    = "com.beeper.ai.model"
+	RoomPromptType   = "com.beeper.ai.additional_prompt"
+	StreamType       = "com.beeper.stream"
 )
 
 func DefaultLoginID(mxid id.UserID) networkid.UserLoginID {
 	return networkid.UserLoginID("default:" + encode(string(mxid)))
 }
 
-func CustomLoginID(mxid id.UserID, slug string) networkid.UserLoginID {
-	return networkid.UserLoginID("custom:" + encode(string(mxid)) + ":" + sanitizeID(slug))
-}
-
 func ProviderLoginID(parent networkid.UserLoginID, providerID string) networkid.UserLoginID {
 	return networkid.UserLoginID("provider:" + encode(string(parent)) + ":" + sanitizeID(providerID))
+}
+
+func ParseProviderLoginID(loginID networkid.UserLoginID) (parent networkid.UserLoginID, providerID string, ok bool) {
+	rest, ok := strings.CutPrefix(string(loginID), "provider:")
+	if !ok {
+		return "", "", false
+	}
+	encodedParent, providerID, ok := strings.Cut(rest, ":")
+	if !ok || encodedParent == "" || providerID == "" {
+		return "", "", false
+	}
+	decodedParent, err := decode(encodedParent)
+	if err != nil || decodedParent == "" {
+		return "", "", false
+	}
+	return networkid.UserLoginID(decodedParent), providerID, true
 }
 
 func PortalID(roomID id.RoomID) networkid.PortalID {

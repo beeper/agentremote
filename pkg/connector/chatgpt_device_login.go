@@ -332,7 +332,6 @@ func chatGPTCodexProvider(credentials chatGPTCredentials) (aiid.ProviderConfig, 
 		RefreshToken: credentials.RefreshToken,
 		ExpiresAtMS:  credentials.ExpiresAtMS,
 		DefaultModel: defaultModel,
-		Enabled:      true,
 	}, nil
 }
 

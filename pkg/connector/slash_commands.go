@@ -274,7 +274,7 @@ func (cl *Client) refreshRoomCapabilities(ctx context.Context, portal *bridgev2.
 }
 
 func (cl *Client) resolveCanonicalRoomModel(ctx context.Context, config RoomConfig) (aiid.ProviderConfig, ai.Model, string, error) {
-	provider, modelID, err := cl.Main.ResolveProvider(ctx, cl.UserLogin, config)
+	provider, modelID, err := cl.resolveProvider(ctx, config)
 	if err != nil {
 		return aiid.ProviderConfig{}, ai.Model{}, "", err
 	}

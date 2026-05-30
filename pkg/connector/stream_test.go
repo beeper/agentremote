@@ -161,11 +161,58 @@ func TestAppendToolOutputsPreservesStructuredResult(t *testing.T) {
 	}
 }
 
+func TestAppendToolOutputsAddsWebSearchSources(t *testing.T) {
+	run := aistream.NewRun("run", "thread", "beeper/gpt-5", "assistant:run", "GPT-5", timeNow())
+	run.MessageID = "assistant:run"
+	writer := aistream.NewWriter(run, timeNow)
+	writer.ToolStart("call-search", "web_search", 0, nil)
+	writer.ToolEnd("call-search", "web_search", map[string]any{"query": "q"}, nil)
+
+	appendToolOutputs(run, []toolOutputEvent{{
+		ID:    "call-search",
+		Name:  "web_search",
+		Input: map[string]any{"query": "q"},
+		Result: agent.AgentToolResult[any]{
+			Details: map[string]any{
+				"results": []any{
+					map[string]any{
+						"title":       "One",
+						"url":         "https://example.com/one",
+						"description": "desc",
+						"published":   "2026-01-01",
+						"siteName":    "Example",
+					},
+				},
+			},
+		},
+	}})
+
+	message := run.FinalBeeperAIMessage(0, true)
+	var source map[string]any
+	for _, part := range message.Parts {
+		if part["type"] == "source-url" {
+			source = part
+			break
+		}
+	}
+	if source == nil {
+		t.Fatalf("expected source-url part, got %#v", message.Parts)
+	}
+	if source["url"] != "https://example.com/one" || source["title"] != "One" {
+		t.Fatalf("unexpected source part %#v", source)
+	}
+	meta, ok := source["providerMetadata"].(map[string]any)
+	if !ok || meta["description"] != "desc" || meta["published"] != "2026-01-01" || meta["siteName"] != "Example" {
+		t.Fatalf("missing source metadata: %#v", source["providerMetadata"])
+	}
+}
+
 func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 	client := &Client{}
 	run := aistream.NewRun("run", "thread", "beeper/gpt-5", "assistant:run", "GPT-5", timeNow())
 	run.MessageID = "assistant:run"
 	assistantEvent, metadata := client.assistantEvent(
+		context.Background(),
 		aiid.PortalKey(id.RoomID("!room:example.com"), "login"),
 		"assistant:run",
 		"beeper",
@@ -220,14 +267,13 @@ func TestAssistantModelProfileUsesConfiguredModelDisplayName(t *testing.T) {
 		ID: "login",
 		Metadata: &aiid.UserLoginMetadata{Providers: map[string]aiid.ProviderConfig{
 			"beeper": {
-				ID:      "beeper",
-				Models:  []ai.Model{{ID: "gpt-5.5", Name: "GPT 5.5"}},
-				Enabled: true,
+				ID:     "beeper",
+				Models: []ai.Model{{ID: "gpt-5.5", Name: "GPT 5.5"}},
 			},
 		}},
 	}}}
 	content := &event.MessageEventContent{}
-	client.applyModelProfile(content, "beeper", "gpt-5.5")
+	client.applyModelProfile(context.Background(), content, "beeper", "gpt-5.5")
 	profile := content.BeeperPerMessageProfile
 	if profile == nil || profile.ID != "beeper/gpt-5.5" || profile.Displayname != "GPT 5.5" || !profile.HasFallback {
 		t.Fatalf("assistant model profile lost configured display name: %#v", profile)

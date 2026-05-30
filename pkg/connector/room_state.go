@@ -66,22 +66,17 @@ func (c *Connector) ReadRoomConfig(ctx context.Context, roomID id.RoomID) (RoomC
 }
 
 func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLogin, roomConfig RoomConfig) (aiid.ProviderConfig, string, error) {
-	meta := login.Metadata.(*aiid.UserLoginMetadata)
-	ensureMetadataDefaults(meta, c.defaultProviderConfig())
 	providerID := roomConfig.ProviderID
 	if providerID == "" {
-		providerID = meta.DefaultProviderID
+		providerID = aiid.DefaultProvider
 	}
-	provider, ok := meta.Providers[providerID]
-	if !ok || !provider.Enabled {
+	provider, ok := c.providersForLogin(login)[providerID]
+	if !ok {
 		return aiid.ProviderConfig{}, "", fmt.Errorf("provider %s is not available for login %s", providerID, login.ID)
 	}
 	modelID := roomConfig.ModelID
 	if modelID == "" {
 		modelID = provider.DefaultModel
-	}
-	if modelID == "" {
-		modelID = meta.DefaultModelID
 	}
 	if modelID == "" {
 		return aiid.ProviderConfig{}, "", fmt.Errorf("provider %s has no selected model", providerID)
@@ -93,6 +88,9 @@ func (c *Connector) ResolveProvider(ctx context.Context, login *bridgev2.UserLog
 }
 
 func providerAllowsModel(provider aiid.ProviderConfig, modelID string) bool {
+	if len(provider.Models) > 0 {
+		return providerHasModel(provider, modelID)
+	}
 	return strings.TrimSpace(modelID) != ""
 }
 

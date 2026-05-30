@@ -12,6 +12,7 @@ import (
 	"github.com/beeper/ai-bridge/pkg/agent/harness/session"
 	ai "github.com/beeper/ai-bridge/pkg/ai"
 	"github.com/beeper/ai-bridge/pkg/aiid"
+	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
@@ -96,16 +97,17 @@ func newAIChatPortalKey(loginID networkid.UserLoginID) networkid.PortalKey {
 }
 
 func (cl *Client) modelContacts(ctx context.Context, query string) []*bridgev2.ResolveIdentifierResponse {
-	meta := cl.loginMetadata()
-	if meta == nil {
+	providers := cl.providers()
+	if len(providers) == 0 {
 		return nil
 	}
 	contacts := []*bridgev2.ResolveIdentifierResponse{}
-	for _, provider := range meta.Providers {
-		if !provider.Enabled {
+	for _, provider := range providers {
+		var ok bool
+		provider, ok = cl.providerForModelContacts(ctx, provider)
+		if !ok {
 			continue
 		}
-		provider = cl.providerWithCatalogModels(ctx, provider)
 		contacts = append(contacts, providerModelContacts(ctx, cl.bridge(), provider, query)...)
 	}
 	return contacts
@@ -116,10 +118,43 @@ func (cl *Client) modelContact(ctx context.Context, provider aiid.ProviderConfig
 }
 
 func (cl *Client) providerWithCatalogModels(ctx context.Context, provider aiid.ProviderConfig) aiid.ProviderConfig {
-	if models, err := cl.aiServicesCatalogModels(ctx, provider); err == nil && len(models) > 0 {
-		provider.Models = models
+	if refreshed, err := cl.providerWithCatalogModelsStrict(ctx, provider); err == nil {
+		return refreshed
 	}
 	return provider
+}
+
+func (cl *Client) providerForModelContacts(ctx context.Context, provider aiid.ProviderConfig) (aiid.ProviderConfig, bool) {
+	if provider.ID != aiid.DefaultProvider {
+		return provider, true
+	}
+	refreshed, err := cl.providerWithCatalogModelsStrict(ctx, provider)
+	if err != nil {
+		zerolog.Ctx(ctx).Warn().Err(err).Str("provider_id", provider.ID).Msg("Skipping provider contacts after model catalog fetch failed")
+		return refreshed, false
+	}
+	if len(refreshed.Models) == 0 {
+		zerolog.Ctx(ctx).Warn().Str("provider_id", provider.ID).Msg("Skipping provider contacts because model catalog is empty")
+		return refreshed, false
+	}
+	return refreshed, true
+}
+
+func (cl *Client) providerWithCatalogModelsStrict(ctx context.Context, provider aiid.ProviderConfig) (aiid.ProviderConfig, error) {
+	if provider.ID != aiid.DefaultProvider {
+		return provider, nil
+	}
+	if len(provider.Models) > 0 {
+		return provider, nil
+	}
+	models, err := cl.aiServicesCatalogModels(ctx, provider)
+	if err != nil {
+		return provider, err
+	}
+	if len(models) > 0 {
+		provider.Models = models
+	}
+	return provider, nil
 }
 
 func (cl *Client) bridge() *bridgev2.Bridge {
@@ -143,7 +178,11 @@ func providerModelContacts(ctx context.Context, br *bridgev2.Bridge, provider ai
 		seen[contact.UserID] = true
 		contacts = append(contacts, contact)
 	}
-	if model, ok := arbitraryModelForProvider(provider, query); ok {
+	if providerAllowsArbitraryModels(provider) {
+		model, ok := arbitraryModelForProvider(provider, query)
+		if !ok {
+			return contacts
+		}
 		contact := modelContactWithGhost(ctx, br, provider, model)
 		if !seen[contact.UserID] {
 			contacts = append(contacts, contact)
@@ -340,15 +379,21 @@ func (entry aiServicesModelEntry) reasoning() bool {
 }
 
 func modelContact(provider aiid.ProviderConfig, model ai.Model) *bridgev2.ResolveIdentifierResponse {
+	info := modelUserInfo(provider, model)
+	return &bridgev2.ResolveIdentifierResponse{
+		UserID:   aiid.ModelContactID(provider.ID, model.ID),
+		UserInfo: info,
+	}
+}
+
+func modelUserInfo(provider aiid.ProviderConfig, model ai.Model) *bridgev2.UserInfo {
 	name := modelDisplayName(provider, model)
 	isBot := true
-	return &bridgev2.ResolveIdentifierResponse{
-		UserID: aiid.ModelContactID(provider.ID, model.ID),
-		UserInfo: &bridgev2.UserInfo{
-			Name:        &name,
-			IsBot:       &isBot,
-			Identifiers: []string{provider.ID + "/" + model.ID, model.ID},
-		},
+	return &bridgev2.UserInfo{
+		Name:        &name,
+		IsBot:       &isBot,
+		Identifiers: []string{provider.ID + "/" + model.ID, model.ID},
+		Avatar:      modelAvatar(provider, model),
 	}
 }
 
@@ -356,6 +401,7 @@ func modelContactWithGhost(ctx context.Context, br *bridgev2.Bridge, provider ai
 	resp := modelContact(provider, model)
 	if br != nil {
 		if ghost, err := br.GetGhostByID(ctx, resp.UserID); err == nil {
+			ghost.UpdateInfo(ctx, resp.UserInfo)
 			resp.Ghost = ghost
 		}
 	}
@@ -375,11 +421,11 @@ func resolveModelForProvider(provider aiid.ProviderConfig, identifier string) (a
 		}
 	}
 	if modelID, ok := strings.CutPrefix(identifier, provider.ID+"/"); ok {
-		if model, ok := arbitraryModelForProvider(provider, modelID); ok {
+		if model, ok := arbitraryModelForProvider(provider, modelID); ok && providerAllowsArbitraryModels(provider) {
 			return model, true
 		}
 	}
-	if !strings.Contains(identifier, "/") {
+	if !strings.Contains(identifier, "/") && providerAllowsArbitraryModels(provider) {
 		if model, ok := arbitraryModelForProvider(provider, identifier); ok {
 			return model, true
 		}
@@ -388,18 +434,19 @@ func resolveModelForProvider(provider aiid.ProviderConfig, identifier string) (a
 }
 
 func (cl *Client) resolveModelIdentifier(ctx context.Context, identifier string) (aiid.ProviderConfig, ai.Model, bool) {
-	meta := cl.loginMetadata()
-	if meta == nil {
+	providers := cl.providers()
+	if len(providers) == 0 {
 		return aiid.ProviderConfig{}, ai.Model{}, false
 	}
 	if providerID, modelID, ok := aiid.ParseModelContactID(aiidNetworkID(identifier)); ok {
 		identifier = providerID + "/" + modelID
 	}
-	for _, provider := range meta.Providers {
-		if !provider.Enabled {
+	for _, provider := range providers {
+		var providerOK bool
+		provider, providerOK = cl.providerForModelContacts(ctx, provider)
+		if !providerOK {
 			continue
 		}
-		provider = cl.providerWithCatalogModels(ctx, provider)
 		if model, ok := resolveModelForProvider(provider, identifier); ok {
 			return provider, model, true
 		}
@@ -420,24 +467,21 @@ func (cl *Client) loginMetadata() *aiid.UserLoginMetadata {
 		return nil
 	}
 	if cl.Main != nil {
-		ensureMetadataDefaults(meta, cl.Main.defaultProviderConfig())
+		ensureMetadata(meta)
 	}
 	return meta
+}
+
+func (cl *Client) providers() map[string]aiid.ProviderConfig {
+	if cl == nil || cl.Main == nil || cl.UserLogin == nil {
+		return nil
+	}
+	return cl.Main.providersForLogin(cl.UserLogin)
 }
 
 func contactModels(provider aiid.ProviderConfig) []ai.Model {
 	if len(provider.Models) > 0 {
 		return provider.Models
-	}
-	if len(provider.AllowedModels) > 0 {
-		models := make([]ai.Model, 0, len(provider.AllowedModels))
-		for _, modelID := range provider.AllowedModels {
-			if modelID == "" {
-				continue
-			}
-			models = append(models, normalizeProviderModel(modelForProviderConfig(provider, modelID), provider))
-		}
-		return models
 	}
 	if provider.DefaultModel == "" {
 		return nil
@@ -463,6 +507,10 @@ func arbitraryModelForProvider(provider aiid.ProviderConfig, query string) (ai.M
 	}
 	model.Name = displayName + ": " + modelID
 	return model, true
+}
+
+func providerAllowsArbitraryModels(provider aiid.ProviderConfig) bool {
+	return provider.ID != aiid.DefaultProvider
 }
 
 func modelDisplayName(provider aiid.ProviderConfig, model ai.Model) string {

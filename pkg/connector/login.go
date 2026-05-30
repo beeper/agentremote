@@ -13,7 +13,6 @@ import (
 	"github.com/beeper/ai-bridge/pkg/aiid"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
-	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/status"
 )
 
@@ -175,7 +174,6 @@ func (l *CustomProviderLogin) submitDefaultModel(ctx context.Context, input map[
 		APIKey:       l.config.APIKey,
 		DefaultModel: modelID,
 		Models:       l.config.Models,
-		Enabled:      true,
 	}
 	login, err := l.Main.UpsertProviderLogin(ctx, l.User, provider)
 	if err != nil {
@@ -318,7 +316,7 @@ func (c *Connector) UpsertProviderLogin(ctx context.Context, user *bridgev2.User
 	if cached := c.Bridge.GetCachedUserLoginByID(loginID); cached != nil {
 		cached.RemoteName = provider.DisplayName
 		cached.RemoteProfile.Name = provider.DisplayName
-		cached.Metadata = providerLoginMetadata(mainLogin.ID, provider.ID)
+		cached.Metadata = &aiid.UserLoginMetadata{}
 		if err = cached.Save(ctx); err != nil {
 			return nil, err
 		}
@@ -331,7 +329,7 @@ func (c *Connector) UpsertProviderLogin(ctx context.Context, user *bridgev2.User
 		RemoteProfile: status.RemoteProfile{
 			Name: provider.DisplayName,
 		},
-		Metadata: providerLoginMetadata(mainLogin.ID, provider.ID),
+		Metadata: &aiid.UserLoginMetadata{},
 	}, &bridgev2.NewLoginParams{})
 	if err != nil {
 		return nil, err
@@ -345,18 +343,14 @@ func (c *Connector) addProviderToLogin(ctx context.Context, login *bridgev2.User
 		return fmt.Errorf("provider id is required")
 	}
 	if provider.ID == aiid.DefaultProvider {
-		return fmt.Errorf("provider id %q is reserved for the homeserver-derived Beeper AI provider", aiid.DefaultProvider)
+		return fmt.Errorf("provider id %q is reserved for the Beeper AI provider", aiid.DefaultProvider)
 	}
 	meta, ok := login.Metadata.(*aiid.UserLoginMetadata)
 	if !ok {
 		return fmt.Errorf("unexpected login metadata type %T", login.Metadata)
 	}
-	ensureMetadataDefaults(meta, c.defaultProviderConfig())
+	ensureMetadata(meta)
 	meta.Providers[provider.ID] = provider
-	if meta.DefaultProviderID == "" || meta.DefaultProviderID == aiid.DefaultProvider && !meta.SyntheticDefault {
-		meta.DefaultProviderID = provider.ID
-		meta.DefaultModelID = provider.DefaultModel
-	}
 	return login.Save(ctx)
 }
 
@@ -372,14 +366,6 @@ func (c *Connector) connectProviderLogin(ctx context.Context, login *bridgev2.Us
 	}
 }
 
-func providerLoginMetadata(parentLoginID networkid.UserLoginID, providerID string) *aiid.UserLoginMetadata {
-	return &aiid.UserLoginMetadata{
-		Kind:          aiid.LoginKindProvider,
-		ParentLoginID: string(parentLoginID),
-		ProviderID:    providerID,
-	}
-}
-
 func customProviderConfig(providerID string, displayName string, baseURL string, apiKey string, defaultModel string, modelList string) aiid.ProviderConfig {
 	provider, api := inferProviderRoute(providerID, baseURL)
 	modelIDs := providerModelIDs(modelList, defaultModel)
@@ -392,7 +378,6 @@ func customProviderConfig(providerID string, displayName string, baseURL string,
 		APIKey:       apiKey,
 		DefaultModel: defaultModel,
 		Models:       providerModelsFromIDs(modelIDs, providerID, provider, api, baseURL),
-		Enabled:      true,
 	}
 }
 

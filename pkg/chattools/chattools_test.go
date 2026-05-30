@@ -85,7 +85,14 @@ func TestSearchUsesConfiguredEndpoint(t *testing.T) {
 		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer key" {
 			t.Fatalf("unexpected request method/header")
 		}
-		_, _ = w.Write([]byte(`{"results":[{"title":"One","url":"https://example.com","snippet":"ok"}]}`))
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["query"] != "query" || payload["numResults"] != float64(5) || payload["useAutoprompt"] != false {
+			t.Fatalf("unexpected search payload %#v", payload)
+		}
+		_, _ = w.Write([]byte(`{"results":[{"title":"One","url":"https://example.com","text":"ok","publishedDate":"2026-01-01","siteName":"Example","author":"A","image":"https://example.com/image.png","favicon":"https://example.com/favicon.ico"}]}`))
 	}))
 	defer server.Close()
 
@@ -93,8 +100,11 @@ func TestSearchUsesConfiguredEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Query != "query" || len(result.Results) != 1 || result.Results[0].Title != "One" {
+	if result.Query != "query" || len(result.Results) != 1 || result.Results[0].Title != "One" || result.Results[0].Snippet != "ok" {
 		t.Fatalf("unexpected search result %#v", result)
+	}
+	if result.Results[0].Published != "2026-01-01" || result.Results[0].SiteName != "Example" || result.Results[0].Author != "A" {
+		t.Fatalf("missing Exa metadata: %#v", result.Results[0])
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -19,11 +20,11 @@ import (
 )
 
 type Connector struct {
-	Bridge            *bridgev2.Bridge
-	Config            Config
-	Store             *aidb.Store
-	AppServiceToken   string
-	HomeserverAddress string
+	Bridge          *bridgev2.Bridge
+	Config          Config
+	Store           *aidb.Store
+	AppServiceToken string
+	HomeserverURL   string
 }
 
 var _ bridgev2.NetworkConnector = (*Connector)(nil)
@@ -77,7 +78,7 @@ func (c *Connector) ValidateConfig() error {
 
 func (c *Connector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin) error {
 	meta := login.Metadata.(*aiid.UserLoginMetadata)
-	if meta.Kind == aiid.LoginKindProvider {
+	if _, _, ok := aiid.ParseProviderLoginID(login.ID); ok {
 		login.Client = &ProviderLoginClient{
 			Main:      c,
 			UserLogin: login,
@@ -85,7 +86,11 @@ func (c *Connector) LoadUserLogin(ctx context.Context, login *bridgev2.UserLogin
 		}
 		return nil
 	}
-	ensureMetadataDefaults(meta, c.defaultProviderConfig())
+	if ensureMetadata(meta) {
+		if err := login.Save(ctx); err != nil {
+			return err
+		}
+	}
 	login.Client = &Client{
 		Main:      c,
 		UserLogin: login,
@@ -98,8 +103,8 @@ func (c *Connector) GetBridgeInfoVersion() (info, capabilities int) {
 	return 1, 3
 }
 
-func (c *Connector) defaultProviderConfig() aiid.ProviderConfig {
-	baseURL := c.defaultAIServicesProxyBaseURL()
+func (c *Connector) defaultProviderConfig(userMXID id.UserID) aiid.ProviderConfig {
+	baseURL := c.defaultAIServicesOpenAIProxyBaseURL(userMXID)
 	return aiid.ProviderConfig{
 		ID:           aiid.DefaultProvider,
 		DisplayName:  "Beeper AI",
@@ -107,34 +112,60 @@ func (c *Connector) defaultProviderConfig() aiid.ProviderConfig {
 		Provider:     ai.ProviderOpenAI,
 		BaseURL:      normalizeResponsesBaseURL(baseURL),
 		DefaultModel: defaultBeeperAIModel,
-		Enabled:      true,
 	}
 }
 
-func (c *Connector) defaultAIServicesProxyBaseURL() string {
-	address := ""
-	if c != nil {
-		address = c.HomeserverAddress
+func (c *Connector) defaultAIServicesOpenAIProxyBaseURL(userMXID id.UserID) string {
+	domain := userMXID.Homeserver()
+	if domain == "" {
+		return ""
 	}
-	return defaultAIServicesProxyBaseURL(address)
+	if domain == "beeper.localtest.me" {
+		if c != nil && c.homeserverAddressHost() == "megahungry-proxy.megahungry" {
+			return "http://ai-services.beeper" + defaultAIServicesProxyPath
+		}
+		return "https://ai-services." + domain + defaultAIServicesProxyPath
+	}
+	return "https://ai-services." + domain + defaultAIServicesProxyPath
 }
 
-func ensureMetadataDefaults(meta *aiid.UserLoginMetadata, defaultProvider aiid.ProviderConfig) {
-	if meta.Kind == "" {
-		meta.Kind = aiid.LoginKindMain
+func (c *Connector) homeserverAddressHost() string {
+	if c == nil {
+		return ""
 	}
+	parsed, err := url.Parse(c.HomeserverURL)
+	if err != nil {
+		return ""
+	}
+	return parsed.Hostname()
+}
+
+func ensureMetadata(meta *aiid.UserLoginMetadata) bool {
+	changed := false
 	if meta.Providers == nil {
 		meta.Providers = map[string]aiid.ProviderConfig{}
+		changed = true
 	}
-	if meta.SyntheticDefault {
-		meta.Providers[defaultProvider.ID] = defaultProvider
+	if _, ok := meta.Providers[aiid.DefaultProvider]; ok {
+		delete(meta.Providers, aiid.DefaultProvider)
+		changed = true
 	}
-	if meta.DefaultProviderID == "" {
-		meta.DefaultProviderID = defaultProvider.ID
+	return changed
+}
+
+func (c *Connector) providersForLogin(login *bridgev2.UserLogin) map[string]aiid.ProviderConfig {
+	providers := map[string]aiid.ProviderConfig{}
+	if c != nil {
+		if defaultProvider := c.defaultProviderConfig(login.UserMXID); defaultProvider.BaseURL != "" {
+			providers[defaultProvider.ID] = defaultProvider
+		}
 	}
-	if meta.DefaultModelID == "" {
-		meta.DefaultModelID = defaultProvider.DefaultModel
+	if meta, ok := login.Metadata.(*aiid.UserLoginMetadata); ok {
+		for id, provider := range meta.Providers {
+			providers[id] = provider
+		}
 	}
+	return providers
 }
 
 func (c *Connector) defaultLoginID(mxid id.UserID) networkid.UserLoginID {
@@ -212,13 +243,16 @@ func (c *Connector) EnsureDefaultLogin(ctx context.Context, user *bridgev2.User)
 	loginID := c.defaultLoginID(user.MXID)
 	if cached := c.Bridge.GetCachedUserLoginByID(loginID); cached != nil {
 		if meta, ok := cached.Metadata.(*aiid.UserLoginMetadata); ok {
-			meta.SyntheticDefault = true
-			ensureMetadataDefaults(meta, c.defaultProviderConfig())
+			if ensureMetadata(meta) {
+				if err := cached.Save(ctx); err != nil {
+					return nil, err
+				}
+			}
 		}
 		return cached, nil
 	}
-	meta := &aiid.UserLoginMetadata{SyntheticDefault: true}
-	ensureMetadataDefaults(meta, c.defaultProviderConfig())
+	meta := &aiid.UserLoginMetadata{}
+	ensureMetadata(meta)
 	return user.NewLogin(ctx, &database.UserLogin{
 		ID:         loginID,
 		RemoteName: aiid.DefaultLoginName,

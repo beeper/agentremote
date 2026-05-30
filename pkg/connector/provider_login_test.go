@@ -14,12 +14,8 @@ import (
 
 func TestProviderLoginUsesParentGhostIdentity(t *testing.T) {
 	providerLogin := &bridgev2.UserLogin{UserLogin: &database.UserLogin{
-		ID: "provider-login",
-		Metadata: &aiid.UserLoginMetadata{
-			Kind:          aiid.LoginKindProvider,
-			ParentLoginID: "main-login",
-			ProviderID:    "openai-codex",
-		},
+		ID:       aiid.ProviderLoginID("main-login", "openai-codex"),
+		Metadata: &aiid.UserLoginMetadata{},
 	}}
 	client := &ProviderLoginClient{UserLogin: providerLogin}
 

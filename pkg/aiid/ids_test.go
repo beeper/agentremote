@@ -32,29 +32,25 @@ func TestPortalAndAssistantIDsAreStable(t *testing.T) {
 	if !ok || providerID != "beeper" || modelID != "gpt-5" {
 		t.Fatalf("model contact ID did not parse: %q %q %v", providerID, modelID, ok)
 	}
-	aliceCustom := CustomLoginID(id.UserID("@alice:example.com"), "openai")
-	bobCustom := CustomLoginID(id.UserID("@bob:example.com"), "openai")
-	if aliceCustom == bobCustom {
-		t.Fatalf("custom login IDs must be scoped per Matrix user")
+	providerLogin := ProviderLoginID(loginID, "openai")
+	parent, providerID, ok := ParseProviderLoginID(providerLogin)
+	if !ok || parent != loginID || providerID != "openai" {
+		t.Fatalf("provider login ID did not parse: %q %q %v", parent, providerID, ok)
 	}
 }
 
 func TestMetadataJSONRoundTrip(t *testing.T) {
 	meta := &UserLoginMetadata{
-		SyntheticDefault: true,
 		Providers: map[string]ProviderConfig{
-			DefaultProvider: {
-				ID:           DefaultProvider,
-				DisplayName:  "Beeper AI",
+			"custom": {
+				ID:           "custom",
+				DisplayName:  "Custom",
 				API:          ai.ApiOpenAIResponses,
-				Provider:     ai.Provider(DefaultProvider),
+				Provider:     "custom",
 				BaseURL:      "https://example.com/v1/responses",
 				DefaultModel: "gpt-5",
-				Enabled:      true,
 			},
 		},
-		DefaultProviderID: DefaultProvider,
-		DefaultModelID:    "gpt-5",
 	}
 	raw, err := json.Marshal(meta)
 	if err != nil {
@@ -64,11 +60,11 @@ func TestMetadataJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if !decoded.SyntheticDefault || decoded.DefaultModelID != "gpt-5" {
-		t.Fatalf("metadata did not round trip: %#v", decoded)
+	if decoded.Providers["custom"].BaseURL != "https://example.com/v1/responses" {
+		t.Fatalf("provider metadata did not round trip: %#v", decoded.Providers["custom"])
 	}
-	if decoded.Providers[DefaultProvider].BaseURL != "https://example.com/v1/responses" {
-		t.Fatalf("provider metadata did not round trip: %#v", decoded.Providers[DefaultProvider])
+	if decoded.Providers["custom"].DefaultModel != "gpt-5" {
+		t.Fatalf("metadata did not round trip: %#v", decoded)
 	}
 }
 

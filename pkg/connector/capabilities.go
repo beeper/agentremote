@@ -144,7 +144,7 @@ func (cl *Client) GetCapabilities(ctx context.Context, portal *bridgev2.Portal) 
 	if err != nil {
 		return roomFeaturesForModel(ai.Model{})
 	}
-	provider, modelID, err := cl.Main.ResolveProvider(ctx, cl.UserLogin, roomConfig)
+	provider, modelID, err := cl.resolveProvider(ctx, roomConfig)
 	if err != nil {
 		return roomFeaturesForModel(ai.Model{})
 	}
