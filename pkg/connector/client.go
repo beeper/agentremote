@@ -2599,9 +2599,6 @@ func (cl *Client) waitForAssistantAnchorMessage(ctx context.Context, stream *ass
 	if stream == nil {
 		return fmt.Errorf("missing assistant stream")
 	}
-	if stream.eventID != "" {
-		return nil
-	}
 	if stream.portal == nil {
 		return fmt.Errorf("missing assistant stream portal")
 	}
@@ -2609,7 +2606,9 @@ func (cl *Client) waitForAssistantAnchorMessage(ctx context.Context, stream *ass
 	if err != nil {
 		return err
 	}
-	stream.eventID = eventID
+	if stream.eventID == "" {
+		stream.eventID = eventID
+	}
 	return nil
 }
 

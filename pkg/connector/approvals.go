@@ -46,6 +46,9 @@ func (r *activeAIRun) requestApproval(ctx context.Context, cl *Client, publisher
 			queued := cl.UserLogin.QueueRemoteEvent(aibridgev2.ApprovalPrompt(portal.PortalKey, aiid.AssistantUserID(), ctxMeta, time.Now()))
 			if queued.Success && queued.EventID != "" {
 				request.ApprovalEventID = string(queued.EventID)
+				if err := r.publishApprovalEventLink(ctx, cl, publisher, portal.MXID, stream, request); err != nil {
+					return aistream.ApprovalRequest{}, err
+				}
 			}
 			return request, nil
 		},
@@ -89,6 +92,14 @@ func (r *activeAIRun) publishApprovalInterrupt(ctx context.Context, cl *Client, 
 	writer := aistream.NewWriter(stream.run, time.Now)
 	writer.ToolApprovalRequestedWithRequest(request)
 	writer.InterruptWithUsage(nil)
+	return cl.publishNewStreamEvents(ctx, publisher, roomID, stream.eventID, stream.run, &stream.publish)
+}
+
+func (r *activeAIRun) publishApprovalEventLink(ctx context.Context, cl *Client, publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, stream *assistantStreamState, request aistream.ApprovalRequest) error {
+	stream.publish.mu.Lock()
+	defer stream.publish.mu.Unlock()
+	writer := aistream.NewWriter(stream.run, time.Now)
+	writer.ApprovalEventLinked(request.ID, request.ApprovalEventID)
 	return cl.publishNewStreamEvents(ctx, publisher, roomID, stream.eventID, stream.run, &stream.publish)
 }
 

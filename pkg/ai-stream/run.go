@@ -539,6 +539,23 @@ func (w *Writer) Custom(name string, value any) {
 	w.Add(w.builder.Custom(name, value))
 }
 
+func (w *Writer) ApprovalEventLinked(approvalID, eventID string) {
+	if approvalID == "" || eventID == "" {
+		return
+	}
+	for i := range w.Run.Interrupts {
+		if w.Run.Interrupts[i].ID == approvalID {
+			SetApprovalInterruptEventID(&w.Run.Interrupts[i], eventID)
+		}
+	}
+	w.Custom(BeeperAIApprovalKey, map[string]any{
+		"schema":          "com.beeper.ai.approval.v1",
+		"id":              approvalID,
+		"state":           "event-linked",
+		"approvalEventId": eventID,
+	})
+}
+
 func (w *Writer) StateDelta(delta any) {
 	w.Add(w.builder.StateDelta(delta))
 }

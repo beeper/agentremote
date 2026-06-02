@@ -125,6 +125,49 @@ func TestApprovalCoordinatorResolvesCommandWithPendingChoices(t *testing.T) {
 	}
 }
 
+func TestApprovalCoordinatorBareCommandUsesFirstPendingChoice(t *testing.T) {
+	coordinator := &ApprovalCoordinator{}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	request := ApprovalRequest{
+		ID:        "approval-1",
+		Choices:   DefaultApprovalChoices(),
+		ExpiresAt: time.Now().Add(5 * time.Second),
+	}
+	requested := make(chan struct{}, 1)
+	done := make(chan ToolApprovalResponse, 1)
+	go func() {
+		response, err := coordinator.Request(ctx, request, ApprovalCoordinatorHooks{
+			PublishRequested: func(ctx context.Context, request ApprovalRequest) (ApprovalRequest, error) {
+				requested <- struct{}{}
+				return request, nil
+			},
+		})
+		if err != nil {
+			t.Errorf("request failed: %v", err)
+		}
+		done <- response
+	}()
+
+	select {
+	case <-requested:
+	case <-time.After(time.Second):
+		t.Fatal("approval request was not published")
+	}
+	response, ok, err := coordinator.ResolveCommand("approval-1", nil)
+	if err != nil || !ok || !response.Approved || response.Choice != ApprovalChoiceApprove {
+		t.Fatalf("bare approval command did not resolve to first choice: response=%#v ok=%v err=%v", response, ok, err)
+	}
+	select {
+	case response = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("approval request did not complete")
+	}
+	if !response.Approved || response.Choice != ApprovalChoiceApprove {
+		t.Fatalf("bad resolved response: %#v", response)
+	}
+}
+
 func TestApprovalCoordinatorTimesOut(t *testing.T) {
 	coordinator := &ApprovalCoordinator{}
 	response, err := coordinator.Request(context.Background(), ApprovalRequest{

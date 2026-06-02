@@ -138,8 +138,8 @@ func (c *ApprovalCoordinator) ResolveCommand(arg string, now func() time.Time) (
 	if c == nil {
 		return ToolApprovalResponse{}, false, nil
 	}
-	approvalID, _, ok := strings.Cut(strings.TrimSpace(arg), " ")
-	if !ok || strings.TrimSpace(approvalID) == "" {
+	approvalID, rawChoice, ok := strings.Cut(strings.TrimSpace(arg), " ")
+	if strings.TrimSpace(approvalID) == "" {
 		response, err := ParseApprovalCommand(arg, DefaultApprovalChoices(), now)
 		return response, false, err
 	}
@@ -149,6 +149,12 @@ func (c *ApprovalCoordinator) ResolveCommand(arg string, now func() time.Time) (
 	c.mu.Unlock()
 	if pending == nil {
 		return ToolApprovalResponse{ID: approvalID}, false, nil
+	}
+	if !ok || strings.TrimSpace(rawChoice) == "" {
+		if len(pending.request.Choices) == 0 {
+			return ToolApprovalResponse{}, false, fmt.Errorf("approval %s has no choices", approvalID)
+		}
+		arg = approvalID + " " + pending.request.Choices[0].Key
 	}
 	response, err := ParseApprovalCommand(arg, pending.request.Choices, now)
 	if err != nil {

@@ -813,6 +813,24 @@ func TestApprovalInterruptOwnsStreamPayloadShape(t *testing.T) {
 	}
 }
 
+func TestApprovalEventLinkedAnnotatesInterruptAndEmitsEvent(t *testing.T) {
+	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.ToolApprovalRequested("tool-1", "fetch", map[string]any{}, ToolApproval{ID: "approval-1", NeedsApproval: true})
+	writer.ApprovalEventLinked("approval-1", "$approval")
+
+	if len(run.Interrupts) != 1 || run.Interrupts[0].Metadata["approvalEventId"] != "$approval" {
+		t.Fatalf("approval event id did not annotate interrupt: %#v", run.Interrupts)
+	}
+	if len(run.Events) != 1 {
+		t.Fatalf("expected approval link event, got %d", len(run.Events))
+	}
+	link, ok := run.Events[0].Get("value").(map[string]any)
+	if !ok || link["id"] != "approval-1" || link["approvalEventId"] != "$approval" || link["state"] != "event-linked" {
+		t.Fatalf("bad approval link event: %#v", run.Events[0])
+	}
+}
+
 func TestApprovalResponseSchemaMatchesPayloadType(t *testing.T) {
 	typedSchema := NewApprovalResponseJSONSchema()
 	if typedSchema.Type != agui.JSONSchemaTypeObject || typedSchema.Properties.Approved["type"] != agui.JSONSchemaTypeBoolean {
