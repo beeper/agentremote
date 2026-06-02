@@ -182,6 +182,7 @@ type ArtifactSummary struct {
 type Writer struct {
 	Run                       *Run
 	builder                   agui.EventBuilder
+	now                       func() time.Time
 	textMessages              map[int]string
 	textOpen                  map[int]bool
 	textContentWritten        bool
@@ -237,6 +238,7 @@ func NewWriter(run *Run, now func() time.Time) *Writer {
 	writer := &Writer{
 		Run:                  run,
 		builder:              agui.NewEventBuilder(run.Model, now),
+		now:                  now,
 		textMessages:         map[int]string{},
 		textOpen:             map[int]bool{},
 		textIndexOffset:      textIndexOffset,
@@ -250,6 +252,15 @@ func NewWriter(run *Run, now func() time.Time) *Writer {
 	}
 	writer.currentAssistantMessageID = writer.textMessageID(0)
 	return writer
+}
+
+func (w *Writer) SetModel(model string) {
+	model = strings.TrimSpace(model)
+	if w == nil || w.Run == nil || model == "" {
+		return
+	}
+	w.Run.Model = model
+	w.builder = agui.NewEventBuilder(model, w.now)
 }
 
 func (w *Writer) Add(evt agui.Event) {

@@ -1008,6 +1008,13 @@ func TestAssistantEventMetadataCanBeFinalizedBeforeInsert(t *testing.T) {
 	if profile == nil || profile.ID != string(aiid.ModelContactID("beeper", "gpt-5")) || profile.Displayname != "gpt-5" || !profile.HasFallback {
 		t.Fatalf("assistant final edit missing model profile: %#v", profile)
 	}
+	part := converted.ModifiedParts[0]
+	if stream, ok := part.Extra["com.beeper.stream"]; !ok || stream != nil {
+		t.Fatalf("assistant final edit must clear stream in m.new_content: %#v", part.Extra)
+	}
+	if stream, ok := part.TopLevelExtra["com.beeper.stream"]; !ok || stream != nil {
+		t.Fatalf("assistant final edit must clear stream at top level: %#v", part.TopLevelExtra)
+	}
 }
 
 func TestAssistantFallbackEventsUseStrictMatrixOrder(t *testing.T) {

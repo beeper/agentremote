@@ -988,13 +988,11 @@ func (cl *Client) assistantFinalEditWithProjection(portalKey networkid.PortalKey
 		}
 		return &bridgev2.ConvertedEdit{
 			ModifiedParts: []*bridgev2.ConvertedEditPart{{
-				Part:    existing[0],
-				Type:    event.EventMessage,
-				Content: projection.Content,
-				Extra:   projection.Extra,
-				TopLevelExtra: map[string]any{
-					"com.beeper.dont_render_edited": true,
-				},
+				Part:          existing[0],
+				Type:          event.EventMessage,
+				Content:       projection.Content,
+				Extra:         aibridgev2.FinalEditExtra(projection.Extra),
+				TopLevelExtra: aibridgev2.FinalEditTopLevelExtra(),
 			}},
 		}, nil
 	}

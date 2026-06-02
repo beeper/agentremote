@@ -30,6 +30,21 @@ func TestPackRunDoesNotSplitOrTruncateBySize(t *testing.T) {
 	}
 }
 
+func TestWriterSetModelUpdatesRunAndFutureEventEnvelopes(t *testing.T) {
+	run := NewRun("run-1", "thread-1", "old/model", "ai", "AI", time.Unix(10, 0))
+	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })
+	writer.Start()
+	writer.SetModel("new/model")
+	writer.Text("hello")
+
+	if run.Model != "new/model" {
+		t.Fatalf("run model = %q, want new/model", run.Model)
+	}
+	if got := run.Events[len(run.Events)-1].Get("model"); got != "new/model" {
+		t.Fatalf("future event model = %#v, want new/model", got)
+	}
+}
+
 func TestPackRunDoesNotPutFinalizationTotalsOnStreamEnvelopes(t *testing.T) {
 	run := NewRun("run-1", "thread-1", DefaultModel, "ai", "AI", time.Unix(10, 0))
 	writer := NewWriter(run, func() time.Time { return time.Unix(10, 0) })

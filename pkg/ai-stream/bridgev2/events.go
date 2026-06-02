@@ -69,6 +69,22 @@ func ApprovalPrompt(portalKey networkid.PortalKey, sender networkid.UserID, ctx 
 	}
 }
 
+func FinalEditExtra(extra map[string]any) map[string]any {
+	out := make(map[string]any, len(extra)+1)
+	for key, value := range extra {
+		out[key] = value
+	}
+	out["com.beeper.stream"] = nil
+	return out
+}
+
+func FinalEditTopLevelExtra() map[string]any {
+	return map[string]any{
+		"com.beeper.dont_render_edited": true,
+		"com.beeper.stream":             nil,
+	}
+}
+
 func FinalMetadataEdit(portalKey networkid.PortalKey, sender networkid.UserID, messageID networkid.MessageID, run aistream.Run, timestamp time.Time) *simplevent.Message[*aistream.Run] {
 	finalContent, finalExtra := aimatrix.FinalContent(run)
 	return FinalMetadataEditWithContent(portalKey, sender, messageID, run, finalContent, finalExtra, timestamp)
@@ -86,13 +102,11 @@ func FinalMetadataEditWithContent(portalKey networkid.PortalKey, sender networki
 			}
 			return &bridgev2.ConvertedEdit{
 				ModifiedParts: []*bridgev2.ConvertedEditPart{{
-					Part:    existing[0],
-					Type:    event.EventMessage,
-					Content: finalContent,
-					Extra:   finalExtra,
-					TopLevelExtra: map[string]any{
-						"com.beeper.dont_render_edited": true,
-					},
+					Part:          existing[0],
+					Type:          event.EventMessage,
+					Content:       finalContent,
+					Extra:         FinalEditExtra(finalExtra),
+					TopLevelExtra: FinalEditTopLevelExtra(),
 				}},
 			}, nil
 		},

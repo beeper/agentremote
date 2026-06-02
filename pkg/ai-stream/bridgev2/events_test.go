@@ -104,9 +104,19 @@ func TestFinalMetadataEditUsesCompactAnchorContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ai, ok := converted.ModifiedParts[0].Extra[aistream.BeeperAIKey].(aistream.BeeperAI)
+	part := converted.ModifiedParts[0]
+	ai, ok := part.Extra[aistream.BeeperAIKey].(aistream.BeeperAI)
 	if !ok || ai.Kind != aistream.AIKindFinal {
-		t.Fatalf("final metadata edit missing final AI payload: %#v", converted.ModifiedParts[0].Extra)
+		t.Fatalf("final metadata edit missing final AI payload: %#v", part.Extra)
+	}
+	if stream, ok := part.Extra["com.beeper.stream"]; !ok || stream != nil {
+		t.Fatalf("final metadata edit must clear stream in m.new_content: %#v", part.Extra)
+	}
+	if stream, ok := part.TopLevelExtra["com.beeper.stream"]; !ok || stream != nil {
+		t.Fatalf("final metadata edit must clear stream at top level: %#v", part.TopLevelExtra)
+	}
+	if part.TopLevelExtra["com.beeper.dont_render_edited"] != true {
+		t.Fatalf("final metadata edit missing no-render-edited marker: %#v", part.TopLevelExtra)
 	}
 }
 
