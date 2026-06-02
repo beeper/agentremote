@@ -115,8 +115,17 @@ func TestStreamPublisherWithAnchorSetupStartsProviderBeforeAnchor(t *testing.T) 
 	if len(publisher.updates) != 0 {
 		t.Fatalf("published before anchor setup completed: %#v", publisher.updates)
 	}
+	resultDone := make(chan ai.Message, 1)
+	go func() {
+		resultDone <- stream.Result()
+	}()
+	select {
+	case result := <-resultDone:
+		t.Fatalf("stream result completed before anchor setup: %#v", result)
+	case <-time.After(50 * time.Millisecond):
+	}
 	close(releaseAnchor)
-	result := stream.Result()
+	result := <-resultDone
 	if result.StopReason != ai.StopReasonStop {
 		t.Fatalf("unexpected stream result %#v", result)
 	}

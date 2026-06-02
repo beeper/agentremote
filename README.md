@@ -232,8 +232,8 @@ Matrix caps event content at 64 KiB. A rich `UIMessage` with full tool inputs/ou
 Some tool calls require explicit user approval before executing (`pkg/ai-stream/approval.go`). When that happens:
 
 - The run **interrupts** (`RUN_FINISHED` with `outcome: interrupt`, reason `tool_call`), and the relevant `tool-call` part flips to `approval-requested` with the proposed `input`.
-- A dedicated approval message is posted (relation type `com.beeper.ai.approval`, key under `com.beeper.ai.approval`, schema `com.beeper.ai.approval.v1`) listing the choices. Defaults: ✅ **Allow once** (`approve`), ☑️ **Allow always** (`always_approve`), ❌ **Deny** (`deny`, danger style).
-- The user **reacts** with one of the choice emoji/keys. The bridge normalizes the reaction, resolves the choice, emits a `TOOL_CALL_RESULT`, and resumes the run. Non-selected and bridge-bot reactions are cleaned up.
+- A dedicated approval message is posted (relation type `com.beeper.ai.approval`, key under `com.beeper.ai.approval`, schema `com.beeper.ai.approval.v1`) listing the choices. Defaults: **Allow once** (`approve`), **Always allow** (`always_approve`), **Deny** (`deny`, danger style).
+- The user responds with `/approve <approval-id> <approve|always|deny>`. The bridge resolves the choice, emits a `TOOL_CALL_RESULT`, and resumes the run.
 - Approvals are queued (one active at a time) and time out to a denied result if unanswered.
 
 The response schema (if you drive approvals programmatically rather than via reactions) is `{ approved: bool, always?: bool, reason?: string, editedArgs?: {...} }`.
@@ -245,7 +245,7 @@ Per-room capabilities (`pkg/connector/capabilities.go`) are tailored to the room
 - **Formatting:** Matrix rich text is fully supported for user messages; the bridge preserves `formatted_body` and advertises full support for the Matrix formatting feature set.
 - **Attachments:** text-like files always (≤512 KB); images only if the model has `image` input (PNG/JPEG/WebP, ≤20 MB); audio + voice only if `audio` input (WAV/MP3/MPEG, ≤25 MB). Formatted captions are preserved.
 - **Location messages:** fully supported as prompt text.
-- `MaxTextLength: 20000`. **Reply:** full. **Edit: rejected. Reaction: unsupported** (reactions are reserved for approvals). **Delete:** full.
+- `MaxTextLength: 20000`. **Reply:** full. **Edit: rejected. Reaction: unsupported.** **Delete:** full.
 - Disappearing messages supported; typing notifications on; read receipts off.
 
 Don't build a client that depends on editing AI messages or reacting to them as a general affordance.
@@ -511,7 +511,7 @@ It serves `/v1/models`, `/v1/responses`, `/v1/chat/completions`, and `/api/strea
 - **Provider registry is populated by import side-effect.** Forget `import _ ".../pkg/ai/providers"` and `ai.Stream` panics.
 - **No agent iteration cap.** Bound runs yourself (`ShouldStopAfterTurn`, context deadline, or `Terminate`).
 - **`Terminate` needs the whole batch.** One terminating tool alongside non-terminating ones won't stop the loop.
-- **Edits rejected, reactions unsupported** as general client affordances — reactions are reserved for approvals.
+- **Edits rejected, reactions unsupported** as general client affordances.
 - **Two delivery modes for the final message** — handle both `inline` and `attachment` (`partsRef`).
 - **Per-room config depends on arbitrary-room-state support** in the Matrix connector; writes use a private bridgev2 escape hatch (fragile across upstream changes).
 - **The `beeper` provider is read-only** and its base URL may be unavailable (login then fails); its models come from a live catalog, not stored config.

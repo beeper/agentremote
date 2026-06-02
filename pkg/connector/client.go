@@ -116,6 +116,7 @@ type assistantStreamState struct {
 	eventID         id.EventID
 	runID           string
 	run             *aistream.Run
+	portal          *bridgev2.Portal
 	metadata        *aiid.MessageMetadata
 	entryID         string
 	anchorTimestamp time.Time
@@ -1110,6 +1111,7 @@ func (cl *Client) assistantStreamPublisher(publisher bridgev2.BeeperStreamPublis
 				messageID:       messageID,
 				runID:           runID,
 				run:             run,
+				portal:          portal,
 				metadata:        metadata,
 				anchorTimestamp: anchorTimestamp,
 				sources:         newSourceCollector(),
@@ -1175,20 +1177,9 @@ func (cl *Client) queueAssistantStreamAnchor(ctx context.Context, portal *bridge
 		}
 		return "", fmt.Errorf("failed to queue stream anchor")
 	}
-	if result.EventID != "" {
-		return result.EventID, nil
-	}
 	eventID, err := cl.waitForMessageEventID(ctx, portal, messageID, aiid.PartID("text"), 30*time.Second)
 	if err == nil && eventID != "" {
 		return eventID, nil
-	}
-	if cl.Main != nil && cl.Main.Bridge != nil && cl.Main.Bridge.Matrix != nil {
-		deterministicEventID := cl.Main.Bridge.Matrix.GenerateDeterministicEventID(portal.MXID, portal.PortalKey, messageID, aiid.PartID("text"))
-		zerolog.Ctx(ctx).Warn().
-			Err(err).
-			Str("event_id", string(deterministicEventID)).
-			Msg("Falling back to deterministic AI stream anchor event ID")
-		return deterministicEventID, nil
 	}
 	return "", err
 }
@@ -2593,6 +2584,24 @@ func (r *activeAIRun) publishToolOutput(ctx context.Context, cl *Client, publish
 	return cl.publishNewStreamEvents(ctx, publisher, roomID, stream.eventID, stream.run, &stream.publish)
 }
 
+func (cl *Client) waitForAssistantAnchorMessage(ctx context.Context, stream *assistantStreamState) error {
+	if stream == nil {
+		return fmt.Errorf("missing assistant stream")
+	}
+	if stream.portal == nil {
+		if stream.eventID != "" {
+			return nil
+		}
+		return fmt.Errorf("missing assistant stream portal")
+	}
+	eventID, err := cl.waitForMessageEventID(ctx, stream.portal, stream.messageID, aiid.PartID("text"), 30*time.Second)
+	if err != nil {
+		return err
+	}
+	stream.eventID = eventID
+	return nil
+}
+
 func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, providerID string, model ai.Model, message ai.Message) {
 	r.mu.Lock()
 	if len(r.streams) == 0 {
@@ -2608,6 +2617,10 @@ func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, provide
 	r.last = stream
 	r.mu.Unlock()
 
+	if err := cl.waitForAssistantAnchorMessage(ctx, stream); err != nil {
+		cl.logStreamError(err, "", stream.eventID, stream.run, "Failed to confirm AI stream anchor before final edit")
+		return
+	}
 	fillAssistantMetadata(stream.metadata, stream.entryID, providerID, model.ID, stream.runID, message)
 	appendToolOutputs(stream.run, stream.tools, message)
 	cl.queueAssistantFinal(r.portalKey, stream.messageID, providerID, model, *stream.run, message, stream.metadata, afterMatrixTimestamp(stream.anchorTimestamp))
@@ -2621,6 +2634,10 @@ func (r *activeAIRun) failOpenAssistant(ctx context.Context, cl *Client, provide
 	r.streams = nil
 	r.mu.Unlock()
 	for _, stream := range streams {
+		if err := cl.waitForAssistantAnchorMessage(ctx, stream); err != nil {
+			cl.logStreamError(err, "", stream.eventID, stream.run, "Failed to confirm AI stream anchor before error edit")
+			continue
+		}
 		cl.queueAssistantRunError(r.portalKey, stream.messageID, providerID, modelID, stream.runID, *stream.run, stream.metadata, afterMatrixTimestamp(stream.anchorTimestamp), err)
 		cl.deleteActiveStream(ctx, stream.runID)
 	}

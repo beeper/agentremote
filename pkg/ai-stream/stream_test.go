@@ -760,17 +760,15 @@ func TestFinalBeeperAIMessageCarriesTopLevelArtifactsWithStableIDs(t *testing.T)
 	}
 }
 
-func TestApprovalResolverMatchesEmojiKeysAndAliases(t *testing.T) {
+func TestApprovalResolverMatchesCommandChoices(t *testing.T) {
 	choices := DefaultApprovalChoices()
-	for _, key := range []string{"✅", "approve"} {
-		choice, ok := ResolveApprovalChoice(choices, key)
-		response := ApprovalResponseForChoice("approval-1", choice)
-		if !ok || !response.Approved || response.Always {
-			t.Fatalf("expected approve for %q, got %#v ok=%v", key, choice, ok)
-		}
-	}
-	choice, ok := ResolveApprovalChoice(choices, "☑️")
+	choice, ok := ResolveApprovalChoice(choices, "approve")
 	response := ApprovalResponseForChoice("approval-1", choice)
+	if !ok || !response.Approved || response.Always {
+		t.Fatalf("expected approve, got %#v ok=%v", choice, ok)
+	}
+	choice, ok = ResolveApprovalChoice(choices, "always")
+	response = ApprovalResponseForChoice("approval-1", choice)
 	if !ok || !response.Approved || !response.Always {
 		t.Fatalf("expected always-approve, got %#v ok=%v", choice, ok)
 	}
@@ -1049,7 +1047,7 @@ func TestApprovalNoticeOwnsHiddenMessagePayloadShape(t *testing.T) {
 		t.Fatalf("bad approval notice choices: %#v", notice["choices"])
 	}
 	first, ok := choices[0].(map[string]any)
-	if !ok || first["key"] != ApprovalChoiceApprove || first["label"] != "Allow once" || first["alias"] != "✅" {
+	if !ok || first["key"] != ApprovalChoiceApprove || first["label"] != "Allow once" || first["shortcut"] != "enter" {
 		t.Fatalf("bad first approval choice: %#v", choices[0])
 	}
 	if _, ok := first["style"]; ok {
@@ -1058,23 +1056,6 @@ func TestApprovalNoticeOwnsHiddenMessagePayloadShape(t *testing.T) {
 	deny, ok := choices[2].(map[string]any)
 	if !ok || deny["style"] != "danger" {
 		t.Fatalf("deny choice should keep danger style: %#v", choices[2])
-	}
-}
-
-func TestCleanupKeepsSelectedUserReactionAndRemovesBridgeOptions(t *testing.T) {
-	choices := DefaultApprovalChoices()
-	cleanup := CleanupApprovalReactions(choices, "✅", []ReactionEvent{
-		{EventID: "$bridge-allow", Sender: "ai", Key: "✅", Bridge: true},
-		{EventID: "$bridge-deny", Sender: "ai", Key: "❌", Bridge: true},
-		{EventID: "$user-allow", Sender: "@user:example", Key: "✅"},
-		{EventID: "$user-deny", Sender: "@user:example", Key: "❌"},
-	}, "ai")
-	if !cleanup.Matched || cleanup.SelectedReactionEvent != "$user-allow" {
-		t.Fatalf("bad selected reaction: %#v", cleanup)
-	}
-	got := strings.Join(cleanup.RedactReactionEvents, ",")
-	if !strings.Contains(got, "$bridge-allow") || !strings.Contains(got, "$bridge-deny") || !strings.Contains(got, "$user-deny") {
-		t.Fatalf("bad cleanup redactions: %#v", cleanup.RedactReactionEvents)
 	}
 }
 

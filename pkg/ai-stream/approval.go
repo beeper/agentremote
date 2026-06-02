@@ -19,23 +19,8 @@ const (
 type ApprovalChoice struct {
 	Key      string `json:"key"`
 	Label    string `json:"label"`
-	Alias    string `json:"alias"`
 	Style    string `json:"style,omitempty"`
 	Shortcut string `json:"shortcut,omitempty"`
-}
-
-type ApprovalCleanup struct {
-	Selected              ApprovalChoice
-	SelectedReactionEvent string
-	RedactReactionEvents  []string
-	Matched               bool
-}
-
-type ReactionEvent struct {
-	EventID string
-	Sender  string
-	Key     string
-	Bridge  bool
 }
 
 type ApprovalTimeout struct {
@@ -527,7 +512,6 @@ func ApprovalChoicesAsAny(choices []ApprovalChoice) []any {
 		item := map[string]any{
 			"key":   choice.Key,
 			"label": choice.Label,
-			"alias": choice.Alias,
 		}
 		if choice.Style != "" {
 			item["style"] = choice.Style
@@ -557,27 +541,24 @@ func DefaultApprovalChoices() []ApprovalChoice {
 		{
 			Key:      ApprovalChoiceApprove,
 			Label:    "Allow once",
-			Alias:    "✅",
 			Shortcut: "enter",
 		},
 		{
 			Key:   ApprovalChoiceAlwaysApprove,
 			Label: "Always allow",
-			Alias: "☑️",
 		},
 		{
 			Key:   ApprovalChoiceDeny,
 			Label: "Deny",
-			Alias: "❌",
 			Style: "danger",
 		},
 	}
 }
 
 func ResolveApprovalChoice(choices []ApprovalChoice, raw string) (ApprovalChoice, bool) {
-	key := NormalizeReaction(raw)
+	key := normalizeApprovalChoice(raw)
 	for _, choice := range choices {
-		if NormalizeReaction(choice.Key) == key || NormalizeReaction(choice.Alias) == key || (choice.Key == ApprovalChoiceAlwaysApprove && key == "always") {
+		if normalizeApprovalChoice(choice.Key) == key || (choice.Key == ApprovalChoiceAlwaysApprove && key == "always") {
 			return choice, true
 		}
 	}
@@ -741,34 +722,8 @@ func (q *ApprovalQueue) resolveLocked(approvalID string) (ApprovalPrompt, bool) 
 	return resolved, true
 }
 
-func CleanupApprovalReactions(choices []ApprovalChoice, selectedKey string, events []ReactionEvent, bridgeSender string) ApprovalCleanup {
-	selected, ok := ResolveApprovalChoice(choices, selectedKey)
-	if !ok {
-		return ApprovalCleanup{}
-	}
-	cleanup := ApprovalCleanup{Selected: selected, Matched: true}
-	for _, evt := range events {
-		if evt.EventID == "" {
-			continue
-		}
-		choice, matchesChoice := ResolveApprovalChoice(choices, evt.Key)
-		isSelected := matchesChoice && choice.Key == selected.Key
-		isBridge := evt.Bridge || (bridgeSender != "" && evt.Sender == bridgeSender)
-		if isSelected && !isBridge && cleanup.SelectedReactionEvent == "" {
-			cleanup.SelectedReactionEvent = evt.EventID
-			continue
-		}
-		if isBridge || (matchesChoice && !isSelected) {
-			cleanup.RedactReactionEvents = append(cleanup.RedactReactionEvents, evt.EventID)
-		}
-	}
-	return cleanup
-}
-
-func NormalizeReaction(reaction string) string {
-	reaction = strings.TrimSpace(reaction)
-	reaction = strings.ReplaceAll(reaction, "\ufe0f", "")
-	return strings.ToLower(reaction)
+func normalizeApprovalChoice(choice string) string {
+	return strings.ToLower(strings.TrimSpace(choice))
 }
 
 func approvalSummaryState(response ToolApprovalResponse) string {
