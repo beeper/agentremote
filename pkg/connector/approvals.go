@@ -40,12 +40,12 @@ func (r *activeAIRun) requestApproval(ctx context.Context, cl *Client, publisher
 	return r.approvalCoordinator().Request(ctx, request, aistream.ApprovalCoordinatorHooks{
 		PublishRequested: func(ctx context.Context, request aistream.ApprovalRequest) (aistream.ApprovalRequest, error) {
 			ctxMeta := r.approvalContext(stream, request)
+			if err := r.publishApprovalInterrupt(ctx, cl, publisher, portal.MXID, stream, request); err != nil {
+				return aistream.ApprovalRequest{}, err
+			}
 			queued := cl.UserLogin.QueueRemoteEvent(aibridgev2.ApprovalPrompt(portal.PortalKey, aiid.AssistantUserID(), ctxMeta, time.Now()))
 			if queued.Success && queued.EventID != "" {
 				request.ApprovalEventID = string(queued.EventID)
-			}
-			if err := r.publishApprovalInterrupt(ctx, cl, publisher, portal.MXID, stream, request); err != nil {
-				return aistream.ApprovalRequest{}, err
 			}
 			return request, nil
 		},
@@ -100,17 +100,17 @@ func (r *activeAIRun) publishApprovalResponse(ctx context.Context, cl *Client, p
 	return cl.publishNewStreamEvents(ctx, publisher, roomID, stream.eventID, stream.run, &stream.publish)
 }
 
-func (r *activeAIRun) resolveApproval(response aistream.ToolApprovalResponse) bool {
+func (r *activeAIRun) resolveApprovalCommand(arg string) (aistream.ToolApprovalResponse, bool, error) {
 	if r == nil {
-		return false
+		return aistream.ToolApprovalResponse{}, false, nil
 	}
 	r.mu.Lock()
 	approvals := r.approvals
 	r.mu.Unlock()
 	if approvals == nil {
-		return false
+		return aistream.ToolApprovalResponse{}, false, nil
 	}
-	return approvals.Resolve(response)
+	return approvals.ResolveCommand(arg, nil)
 }
 
 func (r *activeAIRun) approvalCoordinator() *aistream.ApprovalCoordinator {

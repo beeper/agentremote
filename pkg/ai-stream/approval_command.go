@@ -54,12 +54,12 @@ func ApprovalCommandForID(approvalID string) string {
 	return "/approve " + strings.TrimSpace(approvalID)
 }
 
-func ParseApprovalCommand(arg string, now func() time.Time) (ToolApprovalResponse, error) {
+func ParseApprovalCommand(arg string, choices []ApprovalChoice, now func() time.Time) (ToolApprovalResponse, error) {
 	approvalID, rawChoice, ok := strings.Cut(strings.TrimSpace(arg), " ")
 	if !ok || strings.TrimSpace(approvalID) == "" || strings.TrimSpace(rawChoice) == "" {
 		return ToolApprovalResponse{}, fmt.Errorf("Usage: %s", ApprovalCommandUsage)
 	}
-	choice, ok := ResolveApprovalChoice(DefaultApprovalChoices(), rawChoice)
+	choice, ok := ResolveApprovalChoice(choices, rawChoice)
 	if !ok {
 		return ToolApprovalResponse{}, fmt.Errorf("unknown approval choice %q", strings.TrimSpace(rawChoice))
 	}
@@ -98,7 +98,12 @@ func (c *ApprovalCoordinator) Request(ctx context.Context, request ApprovalReque
 	if err := c.add(pending); err != nil {
 		return ToolApprovalResponse{}, err
 	}
-	defer c.Delete(request.ID)
+	deletePending := true
+	defer func() {
+		if deletePending {
+			c.Delete(request.ID)
+		}
+	}()
 
 	if hooks.PublishRequested != nil {
 		var err error
@@ -110,6 +115,8 @@ func (c *ApprovalCoordinator) Request(ctx context.Context, request ApprovalReque
 	}
 
 	response := c.wait(ctx, request, pending)
+	c.Delete(request.ID)
+	deletePending = false
 	if response.ID == "" {
 		response.ID = request.ID
 	}
@@ -125,6 +132,29 @@ func (c *ApprovalCoordinator) Request(ctx context.Context, request ApprovalReque
 		}
 	}
 	return response, nil
+}
+
+func (c *ApprovalCoordinator) ResolveCommand(arg string, now func() time.Time) (ToolApprovalResponse, bool, error) {
+	if c == nil {
+		return ToolApprovalResponse{}, false, nil
+	}
+	approvalID, _, ok := strings.Cut(strings.TrimSpace(arg), " ")
+	if !ok || strings.TrimSpace(approvalID) == "" {
+		response, err := ParseApprovalCommand(arg, DefaultApprovalChoices(), now)
+		return response, false, err
+	}
+	approvalID = strings.TrimSpace(approvalID)
+	c.mu.Lock()
+	pending := c.pending[approvalID]
+	c.mu.Unlock()
+	if pending == nil {
+		return ToolApprovalResponse{ID: approvalID}, false, nil
+	}
+	response, err := ParseApprovalCommand(arg, pending.request.Choices, now)
+	if err != nil {
+		return ToolApprovalResponse{}, false, err
+	}
+	return response, c.Resolve(response), nil
 }
 
 func (c *ApprovalCoordinator) Resolve(response ToolApprovalResponse) bool {

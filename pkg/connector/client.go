@@ -1177,9 +1177,20 @@ func (cl *Client) queueAssistantStreamAnchor(ctx context.Context, portal *bridge
 		}
 		return "", fmt.Errorf("failed to queue stream anchor")
 	}
+	if result.EventID != "" {
+		return result.EventID, nil
+	}
 	eventID, err := cl.waitForMessageEventID(ctx, portal, messageID, aiid.PartID("text"), 30*time.Second)
 	if err == nil && eventID != "" {
 		return eventID, nil
+	}
+	if cl.Main != nil && cl.Main.Bridge != nil && cl.Main.Bridge.Matrix != nil {
+		deterministicEventID := cl.Main.Bridge.Matrix.GenerateDeterministicEventID(portal.MXID, portal.PortalKey, messageID, aiid.PartID("text"))
+		zerolog.Ctx(ctx).Warn().
+			Err(err).
+			Str("event_id", string(deterministicEventID)).
+			Msg("Falling back to deterministic AI stream anchor event ID")
+		return deterministicEventID, nil
 	}
 	return "", err
 }
@@ -2588,10 +2599,10 @@ func (cl *Client) waitForAssistantAnchorMessage(ctx context.Context, stream *ass
 	if stream == nil {
 		return fmt.Errorf("missing assistant stream")
 	}
+	if stream.eventID != "" {
+		return nil
+	}
 	if stream.portal == nil {
-		if stream.eventID != "" {
-			return nil
-		}
 		return fmt.Errorf("missing assistant stream portal")
 	}
 	eventID, err := cl.waitForMessageEventID(ctx, stream.portal, stream.messageID, aiid.PartID("text"), 30*time.Second)
@@ -2619,6 +2630,7 @@ func (r *activeAIRun) finalizeAssistant(ctx context.Context, cl *Client, provide
 
 	if err := cl.waitForAssistantAnchorMessage(ctx, stream); err != nil {
 		cl.logStreamError(err, "", stream.eventID, stream.run, "Failed to confirm AI stream anchor before final edit")
+		cl.deleteActiveStream(ctx, stream.runID)
 		return
 	}
 	fillAssistantMetadata(stream.metadata, stream.entryID, providerID, model.ID, stream.runID, message)
@@ -2636,6 +2648,7 @@ func (r *activeAIRun) failOpenAssistant(ctx context.Context, cl *Client, provide
 	for _, stream := range streams {
 		if err := cl.waitForAssistantAnchorMessage(ctx, stream); err != nil {
 			cl.logStreamError(err, "", stream.eventID, stream.run, "Failed to confirm AI stream anchor before error edit")
+			cl.deleteActiveStream(ctx, stream.runID)
 			continue
 		}
 		cl.queueAssistantRunError(r.portalKey, stream.messageID, providerID, modelID, stream.runID, *stream.run, stream.metadata, afterMatrixTimestamp(stream.anchorTimestamp), err)

@@ -116,9 +116,12 @@ func TestStreamPublisherWithAnchorSetupStartsProviderBeforeAnchor(t *testing.T) 
 		t.Fatalf("published before anchor setup completed: %#v", publisher.updates)
 	}
 	resultDone := make(chan ai.Message, 1)
+	resultStarted := make(chan struct{})
 	go func() {
+		close(resultStarted)
 		resultDone <- stream.Result()
 	}()
+	<-resultStarted
 	select {
 	case result := <-resultDone:
 		t.Fatalf("stream result completed before anchor setup: %#v", result)

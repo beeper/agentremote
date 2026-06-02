@@ -132,13 +132,13 @@ func TestCanonicalAICommandNameAliases(t *testing.T) {
 }
 
 func TestParseApprovalCommand(t *testing.T) {
-	response, err := aistream.ParseApprovalCommand("approval-1 always", func() time.Time {
+	response, err := aistream.ParseApprovalCommand("approval-1 always", aistream.DefaultApprovalChoices(), func() time.Time {
 		return time.Unix(10, 0)
 	})
 	if err != nil || !response.Approved || !response.Always || response.Choice != aistream.ApprovalChoiceAlwaysApprove {
 		t.Fatalf("always approval response = %#v err=%v", response, err)
 	}
-	response, err = aistream.ParseApprovalCommand("approval-1 deny", func() time.Time {
+	response, err = aistream.ParseApprovalCommand("approval-1 deny", aistream.DefaultApprovalChoices(), func() time.Time {
 		return time.Unix(10, 0)
 	})
 	if err != nil || response.Approved || response.Reason != "denied" {

@@ -11,12 +11,15 @@ import (
 )
 
 func runApproveCommand(cl *Client, ctx context.Context, portal *bridgev2.Portal, _ RoomConfig, arg string, responder aiCommandResponder) error {
-	response, err := aistream.ParseApprovalCommand(arg, nil)
+	active := cl.getActiveRun(portal.PortalKey)
+	if active == nil {
+		return fmt.Errorf("approval is not pending")
+	}
+	response, ok, err := active.resolveApprovalCommand(arg)
 	if err != nil {
 		return err
 	}
-	active := cl.getActiveRun(portal.PortalKey)
-	if active == nil || !active.resolveApproval(response) {
+	if !ok {
 		return fmt.Errorf("approval %s is not pending", response.ID)
 	}
 	return responder.Reply(ctx, aistream.ApprovalCommandReply(response))
