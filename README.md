@@ -236,7 +236,7 @@ Some tool calls require explicit user approval before executing (`pkg/ai-stream/
 - The user responds with `/approve <approval-id> <approve|always|deny>`. The bridge resolves the choice, emits a `TOOL_CALL_RESULT`, and resumes the run.
 - Approvals are queued (one active at a time) and time out to a denied result if unanswered.
 
-The response schema (if you drive approvals programmatically rather than via reactions) is `{ approved: bool, always?: bool, reason?: string, editedArgs?: {...} }`.
+The response schema (if you drive approvals programmatically rather than via slash commands) is `{ approved: bool, always?: bool, reason?: string, editedArgs?: {...} }`.
 
 ## Room capabilities you must respect
 
@@ -531,14 +531,15 @@ It serves `/v1/models`, `/v1/responses`, `/v1/chat/completions`, and `/api/strea
 | `cmd/ai` | bridge entry point (registers connector + providers) |
 | `pkg/ai` | provider/API/model abstraction, streaming interface, env keys |
 | `pkg/ai/providers` | built-in provider implementations (OpenAI Completions/Responses/Codex, Anthropic, Google GenAI/Vertex) + image generation |
-| `pkg/ai-stream` | the `Run` model: AG-UI event accumulation, anchor/stream/final projection, approvals, final-payload sizing |
+| `pkg/ai-command` | shared slash-command parsing for visible `/...` commands and hidden `!ai ...` command messages |
+| `pkg/ai-stream` | the `Run` model: AG-UI event accumulation, anchor/stream/final projection, shared approval commands/coordinator, final-payload sizing |
 | `pkg/ag-ui` | the AG-UI wire event protocol, typed events, schema, validation, capabilities |
 | `pkg/agent` | autonomous tool-using loop + stateful `Agent` + remote `StreamProxy` |
 | `pkg/agent/harness` | production agent: sessions, hooks, queues, compaction, summarization |
 | `pkg/agent/harness/session` | branching conversation tree (per-conversation SQLite) |
 | `pkg/agent/autocompact` | compaction trigger policy |
 | `pkg/chattools` | built-in tools: `get_session`, `fetch`, `web_search` |
-| `pkg/connector` | the `bridgev2` connector: rooms↔sessions, slash/bridge commands, login, provider catalog loading, capabilities, contacts, direct media, room state |
+| `pkg/connector` | the `bridgev2` connector: rooms↔sessions, command adapters, login, provider catalog loading, capabilities, contacts, direct media, room state |
 | `pkg/msgconv` | Matrix ⇄ AI message conversion |
 | `pkg/aiid` | deterministic IDs + metadata types |
 | `pkg/aidb` | bridge-DB persistence: session storage + active-stream resume |

@@ -6,29 +6,20 @@ import (
 	"strings"
 
 	"maunium.net/go/mautrix/bridgev2"
+
+	aistream "github.com/beeper/ai-bridge/pkg/ai-stream"
 )
 
 func runApproveCommand(cl *Client, ctx context.Context, portal *bridgev2.Portal, _ RoomConfig, arg string, responder aiCommandResponder) error {
-	approvalID, rawChoice, ok := strings.Cut(strings.TrimSpace(arg), " ")
-	if !ok || strings.TrimSpace(approvalID) == "" || strings.TrimSpace(rawChoice) == "" {
-		return fmt.Errorf("Usage: /approve <approval-id> <approve|always|deny>")
-	}
-	response, ok := approvalResponseFromCommand(strings.TrimSpace(approvalID), strings.TrimSpace(rawChoice))
-	if !ok {
-		return fmt.Errorf("unknown approval choice %q", strings.TrimSpace(rawChoice))
+	response, err := aistream.ParseApprovalCommand(arg, nil)
+	if err != nil {
+		return err
 	}
 	active := cl.getActiveRun(portal.PortalKey)
 	if active == nil || !active.resolveApproval(response) {
-		return fmt.Errorf("approval %s is not pending", approvalID)
+		return fmt.Errorf("approval %s is not pending", response.ID)
 	}
-	switch {
-	case response.Always:
-		return responder.Reply(ctx, "Approval saved. Continuing.")
-	case response.Approved:
-		return responder.Reply(ctx, "Approved. Continuing.")
-	default:
-		return responder.Reply(ctx, "Denied. Continuing without the requested access.")
-	}
+	return responder.Reply(ctx, aistream.ApprovalCommandReply(response))
 }
 
 func runResetApprovalsCommand(cl *Client, ctx context.Context, _ *bridgev2.Portal, _ RoomConfig, arg string, responder aiCommandResponder) error {

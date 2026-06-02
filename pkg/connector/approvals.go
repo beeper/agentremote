@@ -26,11 +26,6 @@ const (
 	approvalDecisionDeny     = "denied"
 )
 
-type activeApproval struct {
-	request  aistream.ApprovalRequest
-	response chan aistream.ToolApprovalResponse
-}
-
 func (r *activeAIRun) requestApproval(ctx context.Context, cl *Client, publisher bridgev2.BeeperStreamPublisher, portal *bridgev2.Portal, request aistream.ApprovalRequest, beforePublish func(context.Context, *aistream.ToolApprovalResponse) error) (aistream.ToolApprovalResponse, error) {
 	if r == nil || cl == nil || cl.UserLogin == nil || publisher == nil || portal == nil {
 		return aistream.ToolApprovalResponse{ID: request.ID, Approved: false, Reason: "approval_unavailable"}, nil
@@ -39,46 +34,41 @@ func (r *activeAIRun) requestApproval(ctx context.Context, cl *Client, publisher
 	if stream == nil {
 		return aistream.ToolApprovalResponse{ID: request.ID, Approved: false, Reason: "approval_unavailable"}, nil
 	}
-	if request.ID == "" {
-		request.ID = "approval-" + request.ToolCallID
-	}
-	if request.Approval.ID == "" {
-		request.Approval.ID = request.ID
-	}
-	request.Approval.NeedsApproval = true
-	if len(request.Choices) == 0 {
-		request.Choices = aistream.DefaultApprovalChoices()
-	}
 	if request.ExpiresAt.IsZero() {
 		request.ExpiresAt = time.Now().Add(activeStreamIdleTimeout)
 	}
-	expiresAt := request.ExpiresAt.UTC().Format(time.RFC3339)
-	pending := &activeApproval{request: request, response: make(chan aistream.ToolApprovalResponse, 1)}
+	return r.approvalCoordinator().Request(ctx, request, aistream.ApprovalCoordinatorHooks{
+		PublishRequested: func(ctx context.Context, request aistream.ApprovalRequest) (aistream.ApprovalRequest, error) {
+			ctxMeta := r.approvalContext(stream, request)
+			queued := cl.UserLogin.QueueRemoteEvent(aibridgev2.ApprovalPrompt(portal.PortalKey, aiid.AssistantUserID(), ctxMeta, time.Now()))
+			if queued.Success && queued.EventID != "" {
+				request.ApprovalEventID = string(queued.EventID)
+			}
+			if err := r.publishApprovalInterrupt(ctx, cl, publisher, portal.MXID, stream, request); err != nil {
+				return aistream.ApprovalRequest{}, err
+			}
+			return request, nil
+		},
+		BeforeResponded: beforePublish,
+		PublishResponded: func(ctx context.Context, request aistream.ApprovalRequest, response aistream.ToolApprovalResponse) error {
+			return r.publishApprovalResponse(ctx, cl, publisher, portal.MXID, stream, request, response)
+		},
+	})
+}
 
-	r.mu.Lock()
-	if r.approvals == nil {
-		r.approvals = map[string]*activeApproval{}
-	}
-	if _, exists := r.approvals[request.ID]; exists {
-		r.mu.Unlock()
-		return aistream.ToolApprovalResponse{}, fmt.Errorf("approval %s is already pending", request.ID)
-	}
-	r.approvals[request.ID] = pending
-	r.mu.Unlock()
-	defer r.deleteApproval(request.ID)
-
+func (r *activeAIRun) approvalContext(stream *assistantStreamState, request aistream.ApprovalRequest) aistream.ApprovalContext {
 	ctxMeta := aistream.ApprovalContext{
 		ID:          request.ID,
 		ThreadID:    stream.run.ThreadID,
 		RunID:       stream.run.RunID,
 		MessageID:   stream.run.MessageID,
-		Command:     "/approve " + request.ID,
+		Command:     aistream.ApprovalCommandForID(request.ID),
 		ToolCallID:  request.ToolCallID,
 		ToolName:    request.ToolName,
 		Title:       request.Title,
 		Description: request.Description,
 		PlanText:    request.PlanText,
-		ExpiresAt:   expiresAt,
+		ExpiresAt:   request.ExpiresAt.UTC().Format(time.RFC3339),
 		Choices:     request.Choices,
 		TargetEvent: string(stream.eventID),
 		AgentID:     stream.run.AgentID,
@@ -90,46 +80,7 @@ func (r *activeAIRun) requestApproval(ctx context.Context, cl *Client, publisher
 		ctxMeta.PreviewText = stream.run.Preview.Text
 		ctxMeta.PreviewTruncated = stream.run.Preview.Truncated
 	}
-	queued := cl.UserLogin.QueueRemoteEvent(aibridgev2.ApprovalPrompt(portal.PortalKey, aiid.AssistantUserID(), ctxMeta, time.Now()))
-	if queued.Success && queued.EventID != "" {
-		request.ApprovalEventID = string(queued.EventID)
-		pending.request = request
-	}
-
-	if err := r.publishApprovalInterrupt(ctx, cl, publisher, portal.MXID, stream, request); err != nil {
-		return aistream.ToolApprovalResponse{}, err
-	}
-
-	var response aistream.ToolApprovalResponse
-	wait := time.Until(request.ExpiresAt)
-	if wait <= 0 {
-		response = aistream.TimedOutApprovalResponse(request.ID)
-	} else {
-		timer := time.NewTimer(wait)
-		defer timer.Stop()
-		select {
-		case response = <-pending.response:
-		case <-timer.C:
-			response = aistream.TimedOutApprovalResponse(request.ID)
-		case <-ctx.Done():
-			response = aistream.ToolApprovalResponse{ID: request.ID, Approved: false, Reason: "aborted"}
-		}
-	}
-	if response.ID == "" {
-		response.ID = request.ID
-	}
-	if response.RespondedAt == "" {
-		response.RespondedAt = time.Now().UTC().Format(time.RFC3339)
-	}
-	if beforePublish != nil {
-		if err := beforePublish(ctx, &response); err != nil {
-			return aistream.ToolApprovalResponse{}, err
-		}
-	}
-	if err := r.publishApprovalResponse(ctx, cl, publisher, portal.MXID, stream, request, response); err != nil {
-		return aistream.ToolApprovalResponse{}, err
-	}
-	return response, nil
+	return ctxMeta
 }
 
 func (r *activeAIRun) publishApprovalInterrupt(ctx context.Context, cl *Client, publisher bridgev2.BeeperStreamPublisher, roomID id.RoomID, stream *assistantStreamState, request aistream.ApprovalRequest) error {
@@ -150,29 +101,25 @@ func (r *activeAIRun) publishApprovalResponse(ctx context.Context, cl *Client, p
 }
 
 func (r *activeAIRun) resolveApproval(response aistream.ToolApprovalResponse) bool {
-	if r == nil || response.ID == "" {
+	if r == nil {
 		return false
 	}
 	r.mu.Lock()
-	pending := r.approvals[response.ID]
+	approvals := r.approvals
 	r.mu.Unlock()
-	if pending == nil {
+	if approvals == nil {
 		return false
 	}
-	select {
-	case pending.response <- response:
-		return true
-	default:
-		return false
-	}
+	return approvals.Resolve(response)
 }
 
-func (r *activeAIRun) deleteApproval(approvalID string) {
+func (r *activeAIRun) approvalCoordinator() *aistream.ApprovalCoordinator {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.approvals != nil {
-		delete(r.approvals, approvalID)
+	if r.approvals == nil {
+		r.approvals = &aistream.ApprovalCoordinator{}
 	}
+	return r.approvals
 }
 
 func (cl *Client) resolveBeeperProfileForSession(ctx context.Context, portal *bridgev2.Portal, publisher bridgev2.BeeperStreamPublisher, active *activeAIRun, toolCallID string) (*chattools.SessionProfile, error) {
@@ -332,16 +279,4 @@ func aiServicesWhoamiURL(baseURL string) (string, error) {
 	parsed.RawQuery = ""
 	parsed.Fragment = ""
 	return parsed.String(), nil
-}
-
-func approvalResponseFromCommand(approvalID string, rawChoice string) (aistream.ToolApprovalResponse, bool) {
-	choice, ok := aistream.ResolveApprovalChoice(aistream.DefaultApprovalChoices(), rawChoice)
-	if !ok {
-		return aistream.ToolApprovalResponse{}, false
-	}
-	response := aistream.ApprovalResponseForChoice(approvalID, choice)
-	if response.RespondedAt == "" {
-		response.RespondedAt = time.Now().UTC().Format(time.RFC3339)
-	}
-	return response, true
 }

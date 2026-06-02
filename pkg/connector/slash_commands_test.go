@@ -56,7 +56,7 @@ func TestParseAISlashCommand(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if got.name != tt.name || got.arg != tt.arg {
+		if got.Name != tt.name || got.Arg != tt.arg {
 			t.Fatalf("%q parsed as %#v, want name=%q arg=%q", tt.body, got, tt.name, tt.arg)
 		}
 	}
@@ -72,25 +72,25 @@ func TestParseAICommandMessage(t *testing.T) {
 		{
 			name:    "visible slash command",
 			content: &event.MessageEventContent{MsgType: event.MsgText, Body: "/model gpt-5"},
-			want:    aiSlashCommand{name: "model", arg: "gpt-5"},
+			want:    aiSlashCommand{Name: "model", Arg: "gpt-5"},
 			ok:      true,
 		},
 		{
 			name:    "hidden slash command",
 			content: &event.MessageEventContent{MsgType: matrixCommandMsgType, Body: "/abort"},
-			want:    aiSlashCommand{name: "abort"},
+			want:    aiSlashCommand{Name: "abort"},
 			ok:      true,
 		},
 		{
 			name:    "hidden bridge-prefixed command",
 			content: &event.MessageEventContent{MsgType: matrixCommandMsgType, Body: "!ai stop"},
-			want:    aiSlashCommand{name: "abort"},
+			want:    aiSlashCommand{Name: "abort"},
 			ok:      true,
 		},
 		{
 			name:    "hidden bridge-prefixed command with args",
 			content: &event.MessageEventContent{MsgType: matrixCommandMsgType, Body: "!ai model gpt-5"},
-			want:    aiSlashCommand{name: "model", arg: "gpt-5"},
+			want:    aiSlashCommand{Name: "model", Arg: "gpt-5"},
 			ok:      true,
 		},
 		{
@@ -131,14 +131,18 @@ func TestCanonicalAICommandNameAliases(t *testing.T) {
 	}
 }
 
-func TestApprovalResponseFromCommandAliases(t *testing.T) {
-	response, ok := approvalResponseFromCommand("approval-1", "always")
-	if !ok || !response.Approved || !response.Always || response.Choice != aistream.ApprovalChoiceAlwaysApprove {
-		t.Fatalf("always approval response = %#v ok=%v", response, ok)
+func TestParseApprovalCommand(t *testing.T) {
+	response, err := aistream.ParseApprovalCommand("approval-1 always", func() time.Time {
+		return time.Unix(10, 0)
+	})
+	if err != nil || !response.Approved || !response.Always || response.Choice != aistream.ApprovalChoiceAlwaysApprove {
+		t.Fatalf("always approval response = %#v err=%v", response, err)
 	}
-	response, ok = approvalResponseFromCommand("approval-1", "deny")
-	if !ok || response.Approved || response.Reason != "denied" {
-		t.Fatalf("deny approval response = %#v ok=%v", response, ok)
+	response, err = aistream.ParseApprovalCommand("approval-1 deny", func() time.Time {
+		return time.Unix(10, 0)
+	})
+	if err != nil || response.Approved || response.Reason != "denied" {
+		t.Fatalf("deny approval response = %#v err=%v", response, err)
 	}
 }
 

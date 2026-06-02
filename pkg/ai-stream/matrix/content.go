@@ -246,7 +246,7 @@ func ApprovalContent(ctx aistream.ApprovalContext, choices []aistream.ApprovalCh
 	if len(choices) > 0 {
 		body += "\n\nRespond with one of these commands:"
 		for _, choice := range choices {
-			body += fmt.Sprintf("\n- `/approve %s %s`", ctx.ID, choice.Key)
+			body += fmt.Sprintf("\n- `%s`", aistream.ApprovalCommandForChoice(ctx.ID, choice))
 		}
 	}
 	content := format.TextToContent(body)

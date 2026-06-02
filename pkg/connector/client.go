@@ -100,7 +100,7 @@ type activeAIRun struct {
 	streams   []*assistantStreamState
 	last      *assistantStreamState
 	status    *bridgev2.MessageStatusEventInfo
-	approvals map[string]*activeApproval
+	approvals *aistream.ApprovalCoordinator
 	echoWaits []*consumedEchoWait
 
 	lastConsumedTimestamp time.Time

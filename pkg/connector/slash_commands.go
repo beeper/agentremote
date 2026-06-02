@@ -8,14 +8,13 @@ import (
 	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/event"
+
+	aicommand "github.com/beeper/ai-bridge/pkg/ai-command"
 )
 
-type aiSlashCommand struct {
-	name string
-	arg  string
-}
+type aiSlashCommand = aicommand.Command
 
-const matrixCommandMsgType event.MessageType = "com.beeper.command"
+const matrixCommandMsgType event.MessageType = aicommand.MatrixCommandMsgType
 
 type aiSlashCommandDefinition struct {
 	name            string
@@ -161,17 +160,7 @@ func aiSlashCommandDefinitions() []aiSlashCommandDefinition {
 }
 
 func parseAISlashCommand(body string) (aiSlashCommand, bool) {
-	body = strings.TrimSpace(body)
-	if !strings.HasPrefix(body, "/") {
-		return aiSlashCommand{}, false
-	}
-	name, arg, _ := strings.Cut(strings.TrimPrefix(body, "/"), " ")
-	name = canonicalAICommandName(name)
-	arg = strings.TrimSpace(arg)
-	if _, ok := aiSlashCommandByName(name); ok {
-		return aiSlashCommand{name: name, arg: arg}, true
-	}
-	return aiSlashCommand{}, false
+	return aiCommandRegistry().ParseVisible(body)
 }
 
 func parseAICommandMessage(content *event.MessageEventContent) (aiSlashCommand, bool) {
@@ -179,38 +168,29 @@ func parseAICommandMessage(content *event.MessageEventContent) (aiSlashCommand, 
 		return aiSlashCommand{}, false
 	}
 	if content.MsgType == matrixCommandMsgType {
-		return parseAICommandBody(content.Body)
+		return aiCommandRegistry().ParseHidden(content.Body)
 	}
 	return parseAISlashCommand(content.Body)
 }
 
 func parseAICommandBody(body string) (aiSlashCommand, bool) {
-	body = strings.TrimSpace(body)
-	if strings.HasPrefix(body, "/") {
-		return parseAISlashCommand(body)
-	}
-	if !strings.HasPrefix(body, "!ai ") {
-		return aiSlashCommand{}, false
-	}
-	body = strings.TrimSpace(strings.TrimPrefix(body, "!ai"))
-	name, arg, _ := strings.Cut(body, " ")
-	name = canonicalAICommandName(name)
-	arg = strings.TrimSpace(arg)
-	if _, ok := aiSlashCommandByName(name); ok {
-		return aiSlashCommand{name: name, arg: arg}, true
-	}
-	return aiSlashCommand{}, false
+	return aiCommandRegistry().ParseHidden(body)
 }
 
 func canonicalAICommandName(name string) string {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "ai-help":
-		return "help"
-	case "stop":
-		return "abort"
-	default:
-		return strings.ToLower(strings.TrimSpace(name))
+	return aiCommandRegistry().CanonicalName(name)
+}
+
+func aiCommandRegistry() aicommand.Registry {
+	defs := aiSlashCommandDefinitions()
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		names = append(names, def.name)
 	}
+	return aicommand.NewRegistry(names, map[string]string{
+		"ai-help": "help",
+		"stop":    "abort",
+	})
 }
 
 func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, bool, error) {
@@ -224,7 +204,7 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 	if msg.Portal == nil {
 		return nil, true, fmt.Errorf("missing portal for AI command")
 	}
-	def, _ := aiSlashCommandByName(cmd.name)
+	def, _ := aiSlashCommandByName(cmd.Name)
 	reply := func(ctx context.Context, text string) error {
 		return cl.sendCommandNotice(ctx, msg.Portal, text)
 	}
@@ -239,7 +219,7 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 		reply:   reply,
 		replyAI: replyAI,
 	}
-	if def.argRequired && cmd.arg == "" {
+	if def.argRequired && cmd.Arg == "" {
 		if err := responder.Reply(ctx, aiSlashCommandUsage(def)); err != nil {
 			return nil, true, err
 		}
@@ -253,21 +233,21 @@ func (cl *Client) handleAISlashCommand(ctx context.Context, msg *bridgev2.Matrix
 			return nil, true, err
 		}
 	}
-	if err := def.run(cl, ctx, msg.Portal, roomConfig, cmd.arg, responder); err != nil {
+	if err := def.run(cl, ctx, msg.Portal, roomConfig, cmd.Arg, responder); err != nil {
 		if def.noticeErrors {
 			cl.logAISlashCommandError(ctx, msg, cmd, err, "AI slash command rejected")
 			return nil, true, commandRejectedError(err.Error())
 		}
 		return nil, true, err
 	}
-	return cl.commandHandledResponse(msg, cmd.name), true, nil
+	return cl.commandHandledResponse(msg, cmd.Name), true, nil
 }
 
 func (cl *Client) logAISlashCommandError(ctx context.Context, msg *bridgev2.MatrixMessage, cmd aiSlashCommand, err error, message string) {
 	logCtx := zerolog.Ctx(ctx).With().
 		Str("action", "ai_slash_command").
-		Str("command", cmd.name).
-		Bool("arg_present", cmd.arg != "")
+		Str("command", cmd.Name).
+		Bool("arg_present", cmd.Arg != "")
 	if cl != nil && cl.UserLogin != nil {
 		logCtx = logCtx.Str("login_id", string(cl.UserLogin.ID))
 	}
